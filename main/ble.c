@@ -22,10 +22,10 @@
 #include "esp_bt_defs.h"
 #include "esp_bt_main.h"
 #include "esp_bt_device.h"
-#include "ble_spp_server.h"
+#include "ble.h"
 #include "esp_gatt_common_api.h"
 #include "adc.h"
-#include "ble_spp_server.h"
+#include "ble.h"
 #include "led.h"
 #include "bms.h"
 
