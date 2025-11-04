@@ -5,52 +5,26 @@
 #include "adc.h"
 #include "bldc_interface.h"
 #include "bldc_interface_uart.h"
-#include "driver/uart.h"
-#include "soc/gpio_num.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "led.h"
 #include "bms.h"
+#include "bms_interface_uart.h"
 #include "cJSON.h"
 #include "esp_timer.h"
 
 static const char *TAG = "MAIN";
 
-
-
 static mc_values stored_values;
 
-// Add this function before app_main
-static void send_packet(unsigned char *data, unsigned int len) {
-    // Configure UART for VESC communication
-    const uart_port_t uart_num = UART_NUM_1;  // Using UART1
-    uart_write_bytes(uart_num, (const char*)data, len);
-}
-
-// Add this after the send_packet function and before app_main
 static void bldc_values_received(mc_values *values) {
-    // Store the values without logging
     stored_values = *values;
 }
 
-// Add this function before app_main
 static void vesc_task(void *pvParameters) {
     while (1) {
         bldc_interface_get_values();
         vTaskDelay(pdMS_TO_TICKS(50));
-
-    }
-}
-
-
-static void uart_rx_task(void *pvParameters) {
-    uint8_t data[128];
-    while (1) {
-        int len = uart_read_bytes(UART_NUM_1, data, sizeof(data), pdMS_TO_TICKS(10));
-        for (int i = 0; i < len; i++) {
-            bldc_interface_uart_process_byte(data[i]);
-        }
-        bldc_interface_uart_run_timer();
     }
 }
 
@@ -82,7 +56,6 @@ void print_stored_values(void) {
     ESP_LOGI(TAG, "----------------------------------------");
 }
 
-// Add before app_main
 mc_values* get_stored_vesc_values(void) {
     return &stored_values;
 }
@@ -181,7 +154,7 @@ void app_main(void)
     esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P9);
     esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_SCAN, ESP_PWR_LVL_P9);
 
-    // Start the server
+    // Start server
     ret = ble_spp_server_start();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start BLE SPP server: %s", esp_err_to_name(ret));
@@ -190,12 +163,17 @@ void app_main(void)
 
     ESP_LOGI(TAG, "BLE SPP server started successfully");
 
+    // Initialize ADC
     adc_init();
-    bldc_interface_uart_init(send_packet);
-    bldc_interface_set_rx_value_func(bldc_values_received);
+    
+    // Initialize BMS UART interface
+    bms_interface_uart_init();
 
-    // Create UART receive task
-    xTaskCreate(uart_rx_task, "uart_rx_task", 4096, NULL, 5, NULL);
+    // Initialize VESC UART interface
+    bldc_interface_uart_init(bms_interface_uart_send_function);
+    
+    // Set BLDC interface callback
+    bldc_interface_set_rx_value_func(bldc_values_received);
 
     // Create task to periodically request VESC values
     xTaskCreate(vesc_task, "vesc_task", 2048, NULL, 5, NULL);
