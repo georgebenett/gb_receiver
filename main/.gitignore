@@ -1,2 +1,12 @@
+# Ignore build folders
 build/
+**/build/
+
+# Ignore other common things
+*.o
+*.log
+*.exe
+*.out
+*.hex
+
 .vscode/
