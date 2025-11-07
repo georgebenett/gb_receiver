@@ -9,7 +9,7 @@
 #include "cJSON.h"
 
 #include "ble.h"
-#include "adc.h"
+#include "throttle.h"
 #include "led.h"
 #include "bms.h"
 #include "bldc_interface.h"
@@ -150,7 +150,7 @@ void app_main(void) {
 
     ESP_LOGI(TAG, "BLE SPP server started successfully");
 
-    adc_init();
+    throttle_init();
     bms_interface_uart_init();
     bldc_interface_uart_init(bms_interface_uart_send_function);
     bldc_interface_set_rx_value_func(bldc_values_received);

@@ -24,7 +24,7 @@
 #include "esp_bt_device.h"
 #include "ble.h"
 #include "esp_gatt_common_api.h"
-#include "adc.h"
+#include "throttle.h"
 #include "ble.h"
 #include "led.h"
 #include "bms.h"
@@ -41,7 +41,6 @@ extern bms_values_t* get_stored_bms_values(void);
 #define SAMPLE_DEVICE_NAME          CLIENT_NAME    //The Device Name Characteristics in GAP
 #define SPP_SVC_INST_ID             0
 
-#define ADC_TIMEOUT_MS 200  // 200ms timeout
 
 /// SPP Service
 static const uint16_t spp_service_uuid = 0xABF0;
@@ -545,8 +544,8 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                         // Reconstruct the ADC value from the 2 bytes (little-endian)
                         uint16_t adc_value = (uint16_t)p_data->write.value[0] |  // Low byte
                                            ((uint16_t)p_data->write.value[1] << 8);  // High byte
-                        adc_update_value(adc_value);
-                        adc_reset_timeout();
+                        throttle_update_value(adc_value);
+                        throttle_reset_timeout();
                     }
                 }
             }else if((p_data->write.is_prep == true)&&(res == SPP_IDX_SPP_DATA_RECV_VAL)){
@@ -580,8 +579,8 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     	    spp_conn_id = p_data->connect.conn_id;
     	    spp_gatts_if = gatts_if;
     	    is_connected = true;
-    	    adc_reset_value();  // Reset to THROTTLE_NEUTRAL_VALUE on new connection
-    	    adc_start_timeout_monitor();
+    	    throttle_reset_value();  // Reset to THROTTLE_NEUTRAL_VALUE on new connection
+    	    throttle_start_timeout_monitor();
     	    memcpy(&spp_remote_bda,&p_data->connect.remote_bda,sizeof(esp_bd_addr_t));
 #ifdef SUPPORT_HEARTBEAT
     	    uint16_t cmd = 0;
@@ -593,8 +592,8 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     	case ESP_GATTS_DISCONNECT_EVT:
             spp_mtu_size = 23;
     	    is_connected = false;
-    	    adc_reset_value();
-    	    adc_stop_timeout_monitor();
+    	    throttle_reset_value();
+    	    throttle_stop_timeout_monitor();
     	    enable_data_ntf = false;
 #ifdef SUPPORT_HEARTBEAT
     	    enable_heart_ntf = false;
