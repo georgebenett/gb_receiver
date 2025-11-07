@@ -1,7 +1,7 @@
 idf_component_register(SRCS 
             "main.c" 
             "ble.c" 
-            "adc.c"
+            "throttle.c"
             "crc.c"
             "buffer.c"
             "bldc_interface.c"

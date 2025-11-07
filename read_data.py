@@ -515,7 +515,10 @@ class TelemetryDisplay(QMainWindow):
             for chart_view in self.charts.values():
                 chart = chart_view.chart()
                 axis_x = chart.axes(Qt.Orientation.Horizontal)[0]
-                axis_x.setRange(current_time - 30, current_time)
+                # Ensure the range is always positive and shows a full 30-second window
+                min_time = max(0, current_time - 30)
+                max_time = max(30, current_time)
+                axis_x.setRange(min_time, max_time)
 
         # Update info displays every 50ms - only if we have valid data
         if current_time - self.last_info_update >= 0.05:
@@ -541,9 +544,22 @@ class TelemetryDisplay(QMainWindow):
             min_val = min(points)
             max_val = max(points)
 
-            # Add 10% padding to the range
-            padding = (max_val - min_val) * 0.1
-            axis_y.setRange(min_val - padding, max_val + padding)
+            # Add 10% padding to the range, with a minimum range to ensure proper display
+            range_val = max_val - min_val
+            if range_val == 0:
+                # If all values are the same, create a symmetric range around the value
+                padding = abs(min_val) * 0.1 if min_val != 0 else 1.0
+                axis_y.setRange(min_val - padding, max_val + padding)
+            else:
+                padding = range_val * 0.1  # 10% padding
+                # Ensure minimum visible range for better display when values are very close
+                min_range = max(abs(max_val) * 0.1, 1.0) if max_val != 0 else 1.0
+                if range_val + 2 * padding < min_range:
+                    # Expand range to minimum for better visibility
+                    center = (min_val + max_val) / 2
+                    axis_y.setRange(center - min_range / 2, center + min_range / 2)
+                else:
+                    axis_y.setRange(min_val - padding, max_val + padding)
 
     def create_chart(self, title):
         chart = QChart()
@@ -573,6 +589,7 @@ class TelemetryDisplay(QMainWindow):
 
         view = QChartView(chart)
         view.setMinimumSize(400, 300)
+        view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         return view
 
     def toggle_fullscreen(self):
