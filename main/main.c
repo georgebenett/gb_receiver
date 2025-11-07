@@ -12,6 +12,8 @@
 #include "bms_interface_uart.h"
 #include "cJSON.h"
 #include "esp_timer.h"
+#include "driver/uart.h"
+#include <string.h>
 
 static const char *TAG = "MAIN";
 
@@ -19,6 +21,11 @@ static mc_values stored_values;
 
 static void bldc_values_received(mc_values *values) {
     stored_values = *values;
+    // Send telemetry data whenever VESC values are updated
+    bms_values_t* bms_data = get_stored_bms_values();
+    if (bms_data != NULL) {
+        send_telemetry_data(&stored_values, bms_data);
+    }
 }
 
 static void vesc_task(void *pvParameters) {
@@ -115,9 +122,13 @@ void send_telemetry_data(const mc_values* vesc_data, const bms_values_t* bms_dat
     cJSON_AddItemToObject(bms, "cell_voltages", cells);
     cJSON_AddItemToObject(root, "bms", bms);
 
-    // Convert to string and print with newline for read_data.py
+    // Convert to string and write directly to UART0 with newline for read_data.py
     char *json_string = cJSON_PrintUnformatted(root);
-    printf("%s\n", json_string);
+    size_t json_len = strlen(json_string);
+    
+    // Write JSON string + newline directly to UART0
+    uart_write_bytes(UART_NUM_0, json_string, json_len);
+    uart_write_bytes(UART_NUM_0, "\n", 1);
 
     // Cleanup
     cJSON_free(json_string);
