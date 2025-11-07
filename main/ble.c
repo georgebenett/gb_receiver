@@ -81,6 +81,7 @@ static uint8_t heartbeat_count_num = 0;
 
 static bool enable_data_ntf = false;
 static bool is_connected = false;
+
 static esp_bd_addr_t spp_remote_bda = {0x0,};
 
 static uint16_t spp_handle_table[SPP_IDX_NB];

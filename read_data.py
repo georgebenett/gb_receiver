@@ -490,7 +490,7 @@ class TelemetryDisplay(QMainWindow):
             # Validate data structure before processing
             if 'vesc' not in data or 'bms' not in data:
                 continue
-                
+
             try:
                 # Update charts with error handling
                 if 'current_motor' in data['vesc']:
@@ -501,7 +501,7 @@ class TelemetryDisplay(QMainWindow):
                     self.update_series(self.charts['bms_voltage'].chart().series()[0], current_time, data['bms']['total_voltage'])
                 if 'current' in data['bms']:
                     self.update_series(self.charts['bms_current'].chart().series()[0], current_time, data['bms']['current'])
-                
+
                 last_valid_data = data
             except (KeyError, TypeError) as e:
                 print(f"Error updating charts: {e}")
@@ -663,7 +663,13 @@ class TelemetryDisplay(QMainWindow):
     def toggle_connection(self):
         """Handle connection/disconnection"""
         if self.serial and self.serial.isOpen():
-            # Disconnect
+            # Disconnect - send disable command first
+            try:
+                disable_command = "DISABLE_LOG\n"
+                self.serial.write(disable_command.encode())
+                time.sleep(0.05)  # Small delay to ensure command is sent
+            except:
+                pass
             self.serial.close()
             self.serial = None
             self.connect_button.setText("Connect")
@@ -686,14 +692,14 @@ class TelemetryDisplay(QMainWindow):
                 self.serial = QSerialPort()
                 self.serial.setPortName(port_name)
                 self.serial.setBaudRate(115200)
-                
+
                 # Configure serial port settings to match ESP32
                 self.serial.setDataBits(QSerialPort.DataBits.Data8)
                 self.serial.setStopBits(QSerialPort.StopBits.OneStop)
                 self.serial.setParity(QSerialPort.Parity.NoParity)
                 # Note: ESP32 BLE uses RTS flow control, but for reading we can use NoFlowControl
                 self.serial.setFlowControl(QSerialPort.FlowControl.NoFlowControl)
-                
+
                 # Connect readyRead signal before opening
                 self.serial.readyRead.connect(self.read_data)
 
@@ -712,7 +718,12 @@ class TelemetryDisplay(QMainWindow):
                         self.serial.setRequestToSend(False)
                     except:
                         pass
-                    
+
+                    # Send command to enable logging on the device
+                    time.sleep(0.1)  # Small delay to ensure port is ready
+                    enable_command = "ENABLE_LOG\n"
+                    self.serial.write(enable_command.encode())
+
                     self.connect_button.setText("Disconnect")
                     self.connect_button.setStyleSheet("""
                         QPushButton {
