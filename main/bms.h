@@ -34,6 +34,7 @@ esp_err_t bms_read_bms_version(uint8_t *response, size_t *response_len);
 
 // Add declaration for get_stored_vesc_values
 mc_values* get_stored_vesc_values(void);
+bms_values_t* get_stored_bms_values(void);
 void send_telemetry_data(const mc_values* vesc_data, const bms_values_t* bms_data);
 
 

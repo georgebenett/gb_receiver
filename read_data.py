@@ -333,6 +333,8 @@ class TelemetryDisplay(QMainWindow):
 
     def update_info_displays(self, data):
         # Update VESC info
+        if 'vesc' not in data:
+            return
         vesc = data['vesc']
         for key, label in self.vesc_labels.items():
             if key in vesc:
@@ -343,23 +345,31 @@ class TelemetryDisplay(QMainWindow):
                     label.setText(f"{key.replace('_', ' ').title()}: {value}")
 
         # Update BMS info
+        if 'bms' not in data:
+            return
         bms = data['bms']
-        # Calculate SoC first
+        # Calculate SoC first - check for division by zero
         if 'remaining_capacity' in bms and 'nominal_capacity' in bms:
-            soc = (bms['remaining_capacity'] / bms['nominal_capacity']) * 100
-            bms['state_of_charge'] = soc  # Add SoC to the data structure
+            if bms['nominal_capacity'] > 0:
+                soc = (bms['remaining_capacity'] / bms['nominal_capacity']) * 100
+                bms['state_of_charge'] = soc  # Add SoC to the data structure
+            else:
+                bms['state_of_charge'] = 0.0  # Default to 0% if capacity is invalid
+        else:
+            bms['state_of_charge'] = 0.0  # Default if capacity data missing
 
         for key, label in self.bms_labels.items():
             if key == 'state_of_charge':
-                label.setText(f"State of Charge: {bms['state_of_charge']:.1f}%")
+                label.setText(f"State of Charge: {bms.get('state_of_charge', 0.0):.1f}%")
             elif key in bms:
                 value = bms[key]
                 label.setText(f"{key.replace('_', ' ').title()}: {value:.2f}")
 
         # Update cell voltage bars
-        if 'cell_voltages' in data['bms']:
-            for i, voltage in enumerate(data['bms']['cell_voltages']):
-                if i in self.cell_bars:
+        if 'cell_voltages' in data['bms'] and isinstance(data['bms']['cell_voltages'], list):
+            cell_voltages = data['bms']['cell_voltages']
+            for i, voltage in enumerate(cell_voltages):
+                if i in self.cell_bars and isinstance(voltage, (int, float)) and voltage > 0:
                     # Convert voltage to millivolts for the progress bar
                     mv = int(voltage * 1000)
                     self.cell_bars[i].setValue(mv)
@@ -422,15 +432,18 @@ class TelemetryDisplay(QMainWindow):
                         """)
 
             # Update voltage statistics
-            voltages = data['bms']['cell_voltages']
-            min_v = min(voltages)
-            max_v = max(voltages)
-            delta = max_v - min_v
-            delta_mv = delta * 1000  # Convert to millivolts
+            if cell_voltages and len(cell_voltages) > 0:
+                # Filter out invalid voltages
+                valid_voltages = [v for v in cell_voltages if isinstance(v, (int, float)) and v > 0]
+                if valid_voltages:
+                    min_v = min(valid_voltages)
+                    max_v = max(valid_voltages)
+                    delta = max_v - min_v
+                    delta_mv = delta * 1000  # Convert to millivolts
 
-            self.voltage_stats['min'].setText(f"Min: {min_v:.3f}V")
-            self.voltage_stats['max'].setText(f"Max: {max_v:.3f}V")
-            self.voltage_stats['delta'].setText(f"ΔV: {delta_mv:.0f}mV")
+                    self.voltage_stats['min'].setText(f"Min: {min_v:.3f}V")
+                    self.voltage_stats['max'].setText(f"Max: {max_v:.3f}V")
+                    self.voltage_stats['delta'].setText(f"ΔV: {delta_mv:.0f}mV")
 
     def read_data(self):
         """Read data from the serial port"""
@@ -440,10 +453,26 @@ class TelemetryDisplay(QMainWindow):
         while self.serial.canReadLine():
             try:
                 line = self.serial.readLine().data().decode().strip()
+                # Skip empty lines
+                if not line:
+                    continue
+                # Try to parse JSON
                 data = json.loads(line)
-                self.data_queue.append(data)
-            except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                print(f"Error reading data: {e}")
+                # Validate that data has expected structure
+                if 'vesc' in data and 'bms' in data:
+                    self.data_queue.append(data)
+                else:
+                    print(f"Warning: Invalid data structure: {line[:50]}")
+            except json.JSONDecodeError as e:
+                # Only print error if line is not empty (to avoid spam)
+                if line:
+                    print(f"Error parsing JSON: {e} - Line: {line[:50]}")
+                continue
+            except UnicodeDecodeError as e:
+                print(f"Error decoding data: {e}")
+                continue
+            except Exception as e:
+                print(f"Unexpected error reading data: {e}")
                 continue
 
     def process_data_queue(self):
@@ -456,12 +485,27 @@ class TelemetryDisplay(QMainWindow):
         current_time = time.time() - self.start_time
 
         # Process all available data points
+        last_valid_data = None
         for data in self.data_queue:
-            # Update charts
-            self.update_series(self.charts['vesc_current'].chart().series()[0], current_time, data['vesc']['current_motor'])
-            self.update_series(self.charts['vesc_rpm'].chart().series()[0], current_time, data['vesc']['rpm'])
-            self.update_series(self.charts['bms_voltage'].chart().series()[0], current_time, data['bms']['total_voltage'])
-            self.update_series(self.charts['bms_current'].chart().series()[0], current_time, data['bms']['current'])
+            # Validate data structure before processing
+            if 'vesc' not in data or 'bms' not in data:
+                continue
+                
+            try:
+                # Update charts with error handling
+                if 'current_motor' in data['vesc']:
+                    self.update_series(self.charts['vesc_current'].chart().series()[0], current_time, data['vesc']['current_motor'])
+                if 'rpm' in data['vesc']:
+                    self.update_series(self.charts['vesc_rpm'].chart().series()[0], current_time, data['vesc']['rpm'])
+                if 'total_voltage' in data['bms']:
+                    self.update_series(self.charts['bms_voltage'].chart().series()[0], current_time, data['bms']['total_voltage'])
+                if 'current' in data['bms']:
+                    self.update_series(self.charts['bms_current'].chart().series()[0], current_time, data['bms']['current'])
+                
+                last_valid_data = data
+            except (KeyError, TypeError) as e:
+                print(f"Error updating charts: {e}")
+                continue
 
         self.data_queue.clear()
 
@@ -473,10 +517,14 @@ class TelemetryDisplay(QMainWindow):
                 axis_x = chart.axes(Qt.Orientation.Horizontal)[0]
                 axis_x.setRange(current_time - 30, current_time)
 
-        # Update info displays every 50ms
+        # Update info displays every 50ms - only if we have valid data
         if current_time - self.last_info_update >= 0.05:
             self.last_info_update = current_time
-            self.update_info_displays(data)
+            if last_valid_data:
+                try:
+                    self.update_info_displays(last_valid_data)
+                except Exception as e:
+                    print(f"Error updating info displays: {e}")
 
     def update_series(self, series, time, value):
         series.append(time, value)
@@ -638,9 +686,33 @@ class TelemetryDisplay(QMainWindow):
                 self.serial = QSerialPort()
                 self.serial.setPortName(port_name)
                 self.serial.setBaudRate(115200)
+                
+                # Configure serial port settings to match ESP32
+                self.serial.setDataBits(QSerialPort.DataBits.Data8)
+                self.serial.setStopBits(QSerialPort.StopBits.OneStop)
+                self.serial.setParity(QSerialPort.Parity.NoParity)
+                # Note: ESP32 BLE uses RTS flow control, but for reading we can use NoFlowControl
+                self.serial.setFlowControl(QSerialPort.FlowControl.NoFlowControl)
+                
+                # Connect readyRead signal before opening
                 self.serial.readyRead.connect(self.read_data)
 
-                if self.serial.open(QSerialPort.OpenModeFlag.ReadOnly):
+                # Open in ReadWrite mode to avoid DTR reset issues
+                # We'll only read, but ReadWrite mode sometimes handles DTR better
+                if self.serial.open(QSerialPort.OpenModeFlag.ReadWrite):
+                    # Immediately set control lines to prevent reset
+                    # ESP32 boards vary: some need DTR low, others need DTR high
+                    # Try DTR low first (most common for ESP32)
+                    time.sleep(0.01)  # Small delay to let port stabilize
+                    try:
+                        # Most ESP32 boards: DTR low = run, DTR high = reset
+                        # But some are inverted, so try low first
+                        self.serial.setDataTerminalReady(False)
+                        # Set RTS low as well (some boards use RTS for enable/disable)
+                        self.serial.setRequestToSend(False)
+                    except:
+                        pass
+                    
                     self.connect_button.setText("Disconnect")
                     self.connect_button.setStyleSheet("""
                         QPushButton {
