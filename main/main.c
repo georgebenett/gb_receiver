@@ -15,6 +15,7 @@
 #include "bldc_interface.h"
 #include "bms_interface_uart.h"
 #include "bldc_interface_uart.h"
+#include "aux_output.h"
 
 static const char *TAG = "MAIN";
 
@@ -130,6 +131,7 @@ void app_main(void) {
     ESP_ERROR_CHECK(ret);
 
     ESP_ERROR_CHECK(led_init());
+    ESP_ERROR_CHECK(aux_output_init());
     ESP_ERROR_CHECK(bms_uart_init());
 
     ret = ble_spp_server_init();
