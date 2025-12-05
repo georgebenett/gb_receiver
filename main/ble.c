@@ -28,6 +28,7 @@
 #include "ble.h"
 #include "led.h"
 #include "bms.h"
+#include "aux_output.h"
 
 extern mc_values* get_stored_vesc_values(void);
 extern bms_values_t* get_stored_bms_values(void);
@@ -540,12 +541,23 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                     }
                 }
                 if(res == SPP_IDX_SPP_DATA_RECV_VAL){
-                    if(p_data->write.len == 2) {  // Expecting exactly 2 bytes
+                    if(p_data->write.len == 2) {
+                        // Old protocol - throttle only (backward compatibility)
                         // Reconstruct the ADC value from the 2 bytes (little-endian)
                         uint16_t adc_value = (uint16_t)p_data->write.value[0] |  // Low byte
                                            ((uint16_t)p_data->write.value[1] << 8);  // High byte
                         throttle_update_value(adc_value);
                         throttle_reset_timeout();
+                    } else if(p_data->write.len >= 3) {
+                        // New protocol - throttle + aux output
+                        // Reconstruct the ADC value from the 2 bytes (little-endian)
+                        uint16_t adc_value = (uint16_t)p_data->write.value[0] |  // Low byte
+                                           ((uint16_t)p_data->write.value[1] << 8);  // High byte
+                        uint8_t aux_output_state = p_data->write.value[2];
+
+                        throttle_update_value(adc_value);
+                        throttle_reset_timeout();
+                        aux_output_set(aux_output_state);
                     }
                 }
             }else if((p_data->write.is_prep == true)&&(res == SPP_IDX_SPP_DATA_RECV_VAL)){
@@ -801,3 +813,4 @@ static void send_telemetry_task(void *pvParameters) {
         vTaskDelay(pdMS_TO_TICKS(100)); // Update every 100ms
     }
 }
+

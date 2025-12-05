@@ -1,6 +1,6 @@
-idf_component_register(SRCS 
-            "main.c" 
-            "ble.c" 
+idf_component_register(SRCS
+            "main.c"
+            "ble.c"
             "throttle.c"
             "crc.c"
             "buffer.c"
@@ -10,4 +10,5 @@ idf_component_register(SRCS
             "packet.c"
             "led.c"
             "bms.c"
+            "aux_output.c"
         INCLUDE_DIRS ".")
