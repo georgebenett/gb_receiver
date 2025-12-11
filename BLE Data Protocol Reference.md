@@ -4,7 +4,7 @@
 ## Characteristic UUID: 0xABF2
 
 ## Combined Telemetry Data Packet
-Total size: 55 bytes (Big-endian format)
+Total size: 60 bytes (Big-endian format)
 
 | Parameter | Bytes | Position | Type | Scale | Units |
 |-----------|--------|-----------|------|---------|-------|
@@ -20,5 +20,12 @@ Total size: 55 bytes (Big-endian format)
 | nominal_capacity | 2 | 20-21 | int16_t | ÷100 | Ah |
 | num_cells | 1 | 22 | uint8_t | none | count |
 | cell_voltages[16] | 32 | 23-54 | int16_t[] | ÷1000 | V |
+| motor_poles | 1 | 55 | uint8_t | none | count |
+| gear_ratio | 2 | 56-57 | uint16_t | ÷1000 | ratio |
+| wheel_diameter | 2 | 58-59 | uint16_t | ÷1000 | meters |
 
+### Notes
+- `gear_ratio` and `wheel_diameter` come from `COMM_GET_MCCONF_TEMP` (ID 91) on the VESC.
+- The receiver requests `COMM_GET_MCCONF_TEMP` on BLE connect and packs the three fields above.
+- Other fields in `COMM_GET_MCCONF_TEMP` (current scales, ERPM limits, duty limits, and watt/current mins/maxes) are parsed but intentionally not forwarded over BLE; they are only used to keep packet offsets aligned.
 

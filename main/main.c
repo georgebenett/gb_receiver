@@ -21,12 +21,25 @@ static const char *TAG = "MAIN";
 
 static mc_values stored_values;
 static bool uart_logging_enabled = false;
+static mc_temp_config_t stored_mc_temp_conf = {0};
 
 static void bldc_values_received(mc_values *values) {
     stored_values = *values;
     bms_values_t* bms_data = get_stored_bms_values();
     if (bms_data != NULL) {
         send_telemetry_data(&stored_values, bms_data);
+    }
+}
+
+static void mcconf_temp_received(mc_temp_config_t *conf) {
+    stored_mc_temp_conf = *conf;
+    if (conf && conf->valid) {
+        ESP_LOGI(TAG, "MC temp conf: poles=%u gear=%.3f wheel_diam=%.3f",
+                 conf->motor_poles,
+                 conf->gear_ratio,
+                 conf->wheel_diameter);
+    } else {
+        ESP_LOGW(TAG, "MC temp conf invalid");
     }
 }
 
@@ -76,6 +89,10 @@ static void uart_command_handler_task(void *pvParameters) {
 
 mc_values* get_stored_vesc_values(void) {
     return &stored_values;
+}
+
+mc_temp_config_t* get_stored_mc_temp_config(void) {
+    return &stored_mc_temp_conf;
 }
 
 void send_telemetry_data(const mc_values* vesc_data, const bms_values_t* bms_data) {
@@ -156,6 +173,7 @@ void app_main(void) {
     bms_interface_uart_init();
     bldc_interface_uart_init(bms_interface_uart_send_function);
     bldc_interface_set_rx_value_func(bldc_values_received);
+    bldc_interface_set_rx_mcconf_temp_func(mcconf_temp_received);
 
     xTaskCreate(vesc_task, "vesc_task", 2048, NULL, 5, NULL);
     xTaskCreate(uart_command_handler_task, "uart_cmd_handler", 2048, NULL, 5, NULL);

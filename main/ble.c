@@ -28,10 +28,13 @@
 #include "ble.h"
 #include "led.h"
 #include "bms.h"
+#include "datatypes.h"
+#include "bldc_interface.h"
 #include "aux_output.h"
 
 extern mc_values* get_stored_vesc_values(void);
 extern bms_values_t* get_stored_bms_values(void);
+extern mc_temp_config_t* get_stored_mc_temp_config(void);
 
 #define GATTS_TABLE_TAG  "GATTS_SPP_DEMO"
 #define CLIENT_NAME      "GS-THUMB"
@@ -593,6 +596,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     	    is_connected = true;
     	    throttle_reset_value();  // Reset to THROTTLE_NEUTRAL_VALUE on new connection
     	    throttle_start_timeout_monitor();
+            bldc_interface_get_mcconf_temp(); // Fetch compact motor config for BLE telemetry
     	    memcpy(&spp_remote_bda,&p_data->connect.remote_bda,sizeof(esp_bd_addr_t));
 #ifdef SUPPORT_HEARTBEAT
     	    uint16_t cmd = 0;
@@ -736,8 +740,8 @@ static void send_telemetry_task(void *pvParameters) {
             mc_values* vesc_values = get_stored_vesc_values();
             bms_values_t* bms_values = get_stored_bms_values();
 
-            // Combined buffer for VESC (14 bytes) + BMS data (41 bytes) = 55 bytes
-            uint8_t buffer[55];
+            // Combined buffer for VESC (14 bytes) + BMS data (41 bytes) + compact mcconf temp (5 bytes) = 60 bytes
+            uint8_t buffer[60];
             int idx = 0;
 
             // Pack VESC data
@@ -804,6 +808,24 @@ static void send_telemetry_task(void *pvParameters) {
                 buffer[idx++] = (cell_voltage >> 8) & 0xFF;
                 buffer[idx++] = cell_voltage & 0xFF;
             }
+
+            // Pack compact mcconf temp data (motor poles, gear ratio, wheel diameter)
+            mc_temp_config_t* mc_temp_conf = get_stored_mc_temp_config();
+            uint8_t motor_poles = 0;
+            uint16_t gear_ratio_scaled = 0;
+            uint16_t wheel_diameter_scaled = 0;
+
+            if (mc_temp_conf != NULL && mc_temp_conf->valid) {
+                motor_poles = mc_temp_conf->motor_poles;
+                gear_ratio_scaled = (uint16_t)((mc_temp_conf->gear_ratio * 1000.0f) + 0.5f);
+                wheel_diameter_scaled = (uint16_t)((mc_temp_conf->wheel_diameter * 1000.0f) + 0.5f);
+            }
+
+            buffer[idx++] = motor_poles;
+            buffer[idx++] = (gear_ratio_scaled >> 8) & 0xFF;
+            buffer[idx++] = gear_ratio_scaled & 0xFF;
+            buffer[idx++] = (wheel_diameter_scaled >> 8) & 0xFF;
+            buffer[idx++] = wheel_diameter_scaled & 0xFF;
 
             // Send notification
             esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id,
