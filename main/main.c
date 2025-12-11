@@ -23,6 +23,9 @@ static mc_values stored_values;
 static bool uart_logging_enabled = false;
 static mc_temp_config_t stored_mc_temp_conf = {0};
 
+// Forward declarations
+mc_temp_config_t* get_stored_mc_temp_config(void);
+
 static void bldc_values_received(mc_values *values) {
     stored_values = *values;
     bms_values_t* bms_data = get_stored_bms_values();
@@ -44,8 +47,24 @@ static void mcconf_temp_received(mc_temp_config_t *conf) {
 }
 
 static void vesc_task(void *pvParameters) {
+    uint32_t config_retry_counter = 0;
+    const uint32_t CONFIG_RETRY_INTERVAL = 100; // Retry every 100 iterations = 5 seconds
+
     while (1) {
         bldc_interface_get_values();
+
+        // Periodically check if motor config is valid, and retry if not
+        // This ensures config is available even if initial request failed or VESC was not ready
+        config_retry_counter++;
+        if (config_retry_counter >= CONFIG_RETRY_INTERVAL) {
+            config_retry_counter = 0;
+            mc_temp_config_t* config = get_stored_mc_temp_config();
+            if (config == NULL || !config->valid) {
+                ESP_LOGD(TAG, "Motor config invalid, requesting...");
+                bldc_interface_get_mcconf_temp();
+            }
+        }
+
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
@@ -174,6 +193,11 @@ void app_main(void) {
     bldc_interface_uart_init(bms_interface_uart_send_function);
     bldc_interface_set_rx_value_func(bldc_values_received);
     bldc_interface_set_rx_mcconf_temp_func(mcconf_temp_received);
+
+    // Request motor config at startup to ensure it's available before clients connect
+    // Give VESC a moment to initialize, then request config
+    vTaskDelay(pdMS_TO_TICKS(500));
+    bldc_interface_get_mcconf_temp();
 
     xTaskCreate(vesc_task, "vesc_task", 2048, NULL, 5, NULL);
     xTaskCreate(uart_command_handler_task, "uart_cmd_handler", 2048, NULL, 5, NULL);
