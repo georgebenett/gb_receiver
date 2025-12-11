@@ -480,7 +480,15 @@ typedef enum {
 	COMM_FORWARD_CAN,
 	COMM_SET_CHUCK_DATA,
 	COMM_CUSTOM_APP_DATA,
-	COMM_NRF_START_PAIRING
+	COMM_NRF_START_PAIRING,
+	COMM_GET_MCCONF_TEMP = 91
 } COMM_PACKET_ID;
+
+typedef struct {
+	uint8_t motor_poles;
+	float gear_ratio;
+	float wheel_diameter;
+	bool valid;
+} mc_temp_config_t;
 
 #endif /* DATATYPES_H_ */

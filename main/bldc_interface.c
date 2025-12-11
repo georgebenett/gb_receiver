@@ -27,6 +27,7 @@
 #include "bldc_interface.h"
 #include "buffer.h"
 #include <string.h>
+#include "esp_log.h"
 
 // Private variables
 static unsigned char send_buffer[1024];
@@ -38,6 +39,7 @@ static int fw_minor;
 static float rotor_pos;
 static mc_configuration mcconf;
 static app_configuration appconf;
+static mc_temp_config_t mc_temp_config;
 static float detect_cycle_int_limit;
 static float detect_coupling_k;
 static signed char detect_hall_table[8];
@@ -61,6 +63,7 @@ static void(*rx_printf_func)(char *str) = 0;
 static void(*rx_fw_func)(int major, int minor) = 0;
 static void(*rx_rotor_pos_func)(float pos) = 0;
 static void(*rx_mcconf_func)(mc_configuration *conf) = 0;
+static void(*rx_mcconf_temp_func)(mc_temp_config_t *conf) = 0;
 static void(*rx_appconf_func)(app_configuration *conf) = 0;
 static void(*rx_detect_func)(float cycle_int_limit, float coupling_k,
 		const signed char *hall_table, signed char hall_res) = 0;
@@ -460,6 +463,50 @@ void bldc_interface_process_packet(unsigned char *data, unsigned int len) {
 		}
 		break;
 
+	case COMM_GET_MCCONF_TEMP: {
+		ind = 0;
+
+		if (len < 49) {
+			ESP_LOGW("COMM_GET_MCCONF_TEMP", "packet too short (%d)", (int)len);
+			break;
+		}
+
+		float l_current_min_scale = buffer_get_float32_auto(data, &ind);
+		float l_current_max_scale = buffer_get_float32_auto(data, &ind);
+		float l_min_erpm = buffer_get_float32_auto(data, &ind);
+		float l_max_erpm = buffer_get_float32_auto(data, &ind);
+		float l_min_duty = buffer_get_float32_auto(data, &ind);
+		float l_max_duty = buffer_get_float32_auto(data, &ind);
+		float l_watt_min = buffer_get_float32_auto(data, &ind);
+		float l_watt_max = buffer_get_float32_auto(data, &ind);
+		float l_in_current_min = buffer_get_float32_auto(data, &ind);
+		float l_in_current_max = buffer_get_float32_auto(data, &ind);
+
+		uint8_t motor_poles_u8 = data[ind++];
+		float si_gear_ratio = buffer_get_float32_auto(data, &ind);
+		float si_wheel_diameter = buffer_get_float32_auto(data, &ind);
+
+		(void) l_current_min_scale;
+		(void) l_current_max_scale;
+		(void) l_min_erpm;
+		(void) l_max_erpm;
+		(void) l_min_duty;
+		(void) l_max_duty;
+		(void) l_watt_min;
+		(void) l_watt_max;
+		(void) l_in_current_min;
+		(void) l_in_current_max;
+
+		mc_temp_config.motor_poles = motor_poles_u8;
+		mc_temp_config.gear_ratio = si_gear_ratio;
+		mc_temp_config.wheel_diameter = si_wheel_diameter;
+		mc_temp_config.valid = true;
+
+		if (rx_mcconf_temp_func) {
+			rx_mcconf_temp_func(&mc_temp_config);
+		}
+	} break;
+
 	case COMM_SET_MCCONF:
 		// This is a confirmation that the new mcconf is received.
 		if (rx_mcconf_received_func) {
@@ -506,6 +553,10 @@ void bldc_interface_set_rx_rotor_pos_func(void(*func)(float pos)) {
 
 void bldc_interface_set_rx_mcconf_func(void(*func)(mc_configuration *conf)) {
 	rx_mcconf_func = func;
+}
+
+void bldc_interface_set_rx_mcconf_temp_func(void(*func)(mc_temp_config_t *conf)) {
+	rx_mcconf_temp_func = func;
 }
 
 void bldc_interface_set_rx_appconf_func(void(*func)(app_configuration *conf)) {
@@ -834,6 +885,12 @@ void bldc_interface_get_values(void) {
 void bldc_interface_get_mcconf(void) {
 	int32_t send_index = 0;
 	send_buffer[send_index++] = COMM_GET_MCCONF;
+	send_packet_no_fwd(send_buffer, send_index);
+}
+
+void bldc_interface_get_mcconf_temp(void) {
+	int32_t send_index = 0;
+	send_buffer[send_index++] = COMM_GET_MCCONF_TEMP;
 	send_packet_no_fwd(send_buffer, send_index);
 }
 
