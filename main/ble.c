@@ -543,26 +543,14 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                         enable_data_ntf = false;
                     }
                 }
-                if(res == SPP_IDX_SPP_DATA_RECV_VAL){
-                    if(p_data->write.len == 2) {
-                        // Old protocol - throttle only (backward compatibility)
-                        // Reconstruct the ADC value from the 2 bytes (little-endian)
-                        uint16_t adc_value = (uint16_t)p_data->write.value[0] |  // Low byte
-                                           ((uint16_t)p_data->write.value[1] << 8);  // High byte
-                        throttle_update_value(adc_value);
-                        throttle_reset_timeout();
-                    } else if(p_data->write.len >= 3) {
-                        // New protocol - throttle + aux output
-                        // Reconstruct the ADC value from the 2 bytes (little-endian)
-                        uint16_t adc_value = (uint16_t)p_data->write.value[0] |  // Low byte
-                                           ((uint16_t)p_data->write.value[1] << 8);  // High byte
-                        uint8_t aux_output_state = p_data->write.value[2];
 
-                        throttle_update_value(adc_value);
-                        throttle_reset_timeout();
-                        aux_output_set(aux_output_state);
-                    }
-                }
+                uint16_t adc_value = (uint16_t)p_data->write.value[0] |  // Low byte
+                                           ((uint16_t)p_data->write.value[1] << 8);  // High byte
+                uint8_t aux_output_state = p_data->write.value[2]; // Aux output state
+
+                throttle_update_value(adc_value);
+                throttle_reset_timeout();
+                aux_output_set(aux_output_state);
             }else if((p_data->write.is_prep == true)&&(res == SPP_IDX_SPP_DATA_RECV_VAL)){
                 ESP_LOGI(GATTS_TABLE_TAG, "ESP_GATTS_PREP_WRITE_EVT : handle = %d", res);
                 store_wr_buffer(p_data);
