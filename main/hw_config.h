@@ -9,7 +9,8 @@
 #define UART1_VESC_RX_PIN         GPIO_NUM_18
 #define LED_PIN                   GPIO_NUM_12
 
-#define AUX_OUTPUT_GPIO           GPIO_NUM_13
+#define AUX_OUTPUT_GPIO           GPIO_NUM_6
+#define AUX_OUTPUT_LED_PIN        GPIO_NUM_10
 
 #define BMS_UART_TX_PIN           GPIO_NUM_17
 #define BMS_UART_RX_PIN           GPIO_NUM_16

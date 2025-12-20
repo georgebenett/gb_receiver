@@ -7,6 +7,7 @@
 #include "bldc_interface.h"
 #include "hw_config.h"
 #include "led.h"
+#include "aux_output.h"
 
 #define THROTTLE_TAG "THROTTLE"
 
@@ -49,6 +50,7 @@ void throttle_update_value(uint16_t value)
     current_throttle_value = value;
     throttle_reset_timeout();  // Reset the timeout timer
     led_set_connection_state(true);  // Set LED to connected state on packet reception
+    aux_output_update_pwm();  // Update aux output LED PWM with new throttle value
     ESP_LOGD(THROTTLE_TAG, "%d", value);
 }
 
