@@ -11,4 +11,5 @@ idf_component_register(SRCS
             "led.c"
             "bms.c"
             "aux_output.c"
+            "usb_serial.c"
         INCLUDE_DIRS ".")

@@ -722,6 +722,10 @@ esp_err_t ble_spp_server_start(void)
     return ESP_OK;
 }
 
+bool ble_is_connected(void) {
+    return is_connected;
+}
+
 static void send_telemetry_task(void *pvParameters) {
     while (1) {
         if (is_connected && enable_data_ntf) {

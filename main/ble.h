@@ -55,3 +55,6 @@ esp_err_t ble_spp_server_init(void);
 
 // Start the BLE SPP server
 esp_err_t ble_spp_server_start(void);
+
+// Get BLE connection status
+bool ble_is_connected(void);

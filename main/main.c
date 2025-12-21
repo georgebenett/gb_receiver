@@ -16,6 +16,7 @@
 #include "bms_interface_uart.h"
 #include "bldc_interface_uart.h"
 #include "aux_output.h"
+#include "usb_serial.h"
 
 static const char *TAG = "MAIN";
 
@@ -170,6 +171,9 @@ void app_main(void) {
     ESP_ERROR_CHECK(aux_output_init());
     ESP_ERROR_CHECK(bms_uart_init());
 
+    // Initialize USB serial
+    usb_serial_init();
+
     ret = ble_spp_server_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize BLE SPP server: %s", esp_err_to_name(ret));
@@ -187,6 +191,9 @@ void app_main(void) {
     }
 
     ESP_LOGI(TAG, "BLE SPP server started successfully");
+
+    // Start USB serial task
+    usb_serial_start_task();
 
     throttle_init();
     bms_interface_uart_init();
