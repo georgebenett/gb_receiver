@@ -1,4 +1,4 @@
-#!/home/george/Documents/gb_receiver/venv/bin/python3
+#!/Users/georgebenett/repo/gb_receiver/venv/bin/python3
 import sys
 from PyQt6.lupdate.pylupdate import main
 if __name__ == '__main__':
