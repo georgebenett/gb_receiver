@@ -135,11 +135,6 @@ static void print_bms_values(uint8_t *data, size_t len) {
                 stored_bms_values.current = ((int16_t)(data[6] << 8 | data[7])) / 100.0f;
                 stored_bms_values.remaining_capacity = (data[8] << 8 | data[9]) / 100.0f;
                 stored_bms_values.nominal_capacity = (data[10] << 8 | data[11]) / 100.0f;
-
-                mc_values* vesc_data = get_stored_vesc_values();
-                if (vesc_data != NULL) {
-                    send_telemetry_data(vesc_data, &stored_bms_values);
-                }
             }
             break;
 
@@ -176,11 +171,6 @@ static void bms_read_task(void *pvParameters) {
                     is_connected = false;
                     // Clear BMS values when disconnected
                     memset(&stored_bms_values, 0, sizeof(bms_values_t));
-                    // Send one telemetry update with zeros
-                    mc_values* vesc_data = get_stored_vesc_values();
-                    if (vesc_data != NULL) {
-                        send_telemetry_data(vesc_data, &stored_bms_values);
-                    }
                 }
                 // When disconnected, slow down the retry rate significantly
                 vTaskDelay(pdMS_TO_TICKS(1000)); // 1 second between retries

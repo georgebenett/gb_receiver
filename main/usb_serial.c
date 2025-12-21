@@ -374,7 +374,7 @@ static void handle_cmd_start_streaming(const binary_packet_t* packet) {
     uint16_t rate_hz = 10; // Default 10Hz
 
     if (packet->payload_length >= 2) {
-        // Payload: [rate_hz_lsb][rate_hz_msb]
+        // Payload: [rate_hz_lsb][rate_hz_msb] (little-endian)
         rate_hz = packet->payload[0] | (packet->payload[1] << 8);
     }
 
@@ -400,6 +400,7 @@ static void handle_cmd_set_stream_rate(const binary_packet_t* packet) {
         return;
     }
 
+    // Payload: [rate_hz_lsb][rate_hz_msb] (little-endian)
     uint16_t rate_hz = packet->payload[0] | (packet->payload[1] << 8);
 
     // Validate rate (1Hz - 100Hz)
@@ -455,42 +456,42 @@ void usb_serial_send_stream_data(void) {
     // VESC data (if available)
     mc_values* vesc_values = get_stored_vesc_values();
     if (vesc_values != NULL) {
-        // Voltage (2 bytes, big-endian, scaled by 100)
+        // Voltage (2 bytes, little-endian, scaled by 100)
         int16_t voltage = (int16_t)(vesc_values->v_in * 100);
-        payload[idx++] = (voltage >> 8) & 0xFF;
         payload[idx++] = voltage & 0xFF;
+        payload[idx++] = (voltage >> 8) & 0xFF;
 
-        // Current motor (2 bytes, big-endian, scaled by 100)
+        // Current motor (2 bytes, little-endian, scaled by 100)
         int16_t current_motor = (int16_t)(vesc_values->current_motor * 100);
-        payload[idx++] = (current_motor >> 8) & 0xFF;
         payload[idx++] = current_motor & 0xFF;
+        payload[idx++] = (current_motor >> 8) & 0xFF;
 
-        // Current input (2 bytes, big-endian, scaled by 100)
+        // Current input (2 bytes, little-endian, scaled by 100)
         int16_t current_input = (int16_t)(vesc_values->current_in * 100);
-        payload[idx++] = (current_input >> 8) & 0xFF;
         payload[idx++] = current_input & 0xFF;
+        payload[idx++] = (current_input >> 8) & 0xFF;
 
-        // Duty cycle (2 bytes, big-endian, scaled by 1000)
+        // Duty cycle (2 bytes, little-endian, scaled by 1000)
         int16_t duty = (int16_t)(vesc_values->duty_now * 1000);
-        payload[idx++] = (duty >> 8) & 0xFF;
         payload[idx++] = duty & 0xFF;
+        payload[idx++] = (duty >> 8) & 0xFF;
 
-        // RPM (4 bytes, big-endian)
+        // RPM (4 bytes, little-endian)
         int32_t rpm = (int32_t)vesc_values->rpm;
-        payload[idx++] = (rpm >> 24) & 0xFF;
-        payload[idx++] = (rpm >> 16) & 0xFF;
-        payload[idx++] = (rpm >> 8) & 0xFF;
         payload[idx++] = rpm & 0xFF;
+        payload[idx++] = (rpm >> 8) & 0xFF;
+        payload[idx++] = (rpm >> 16) & 0xFF;
+        payload[idx++] = (rpm >> 24) & 0xFF;
 
-        // Temperature MOSFET (2 bytes, big-endian, scaled by 100)
+        // Temperature MOSFET (2 bytes, little-endian, scaled by 100)
         int16_t temp_mos = (int16_t)(vesc_values->temp_mos * 100);
-        payload[idx++] = (temp_mos >> 8) & 0xFF;
         payload[idx++] = temp_mos & 0xFF;
+        payload[idx++] = (temp_mos >> 8) & 0xFF;
 
-        // Temperature motor (2 bytes, big-endian, scaled by 100)
+        // Temperature motor (2 bytes, little-endian, scaled by 100)
         int16_t temp_motor = (int16_t)(vesc_values->temp_motor * 100);
-        payload[idx++] = (temp_motor >> 8) & 0xFF;
         payload[idx++] = temp_motor & 0xFF;
+        payload[idx++] = (temp_motor >> 8) & 0xFF;
     } else {
         // No VESC data available - send zeros (16 bytes total)
         for (int i = 0; i < 16; i++) {
@@ -501,30 +502,30 @@ void usb_serial_send_stream_data(void) {
     // BMS data (if available)
     bms_values_t* bms_values = get_stored_bms_values();
     if (bms_values != NULL) {
-        // Total voltage (2 bytes, big-endian, scaled by 100)
+        // Total voltage (2 bytes, little-endian, scaled by 100)
         int16_t bms_voltage = (int16_t)(bms_values->total_voltage * 100);
-        payload[idx++] = (bms_voltage >> 8) & 0xFF;
         payload[idx++] = bms_voltage & 0xFF;
+        payload[idx++] = (bms_voltage >> 8) & 0xFF;
 
-        // Current (2 bytes, big-endian, scaled by 100)
+        // Current (2 bytes, little-endian, scaled by 100)
         int16_t bms_current = (int16_t)(bms_values->current * 100);
-        payload[idx++] = (bms_current >> 8) & 0xFF;
         payload[idx++] = bms_current & 0xFF;
+        payload[idx++] = (bms_current >> 8) & 0xFF;
 
-        // Remaining capacity (2 bytes, big-endian, scaled by 100)
+        // Remaining capacity (2 bytes, little-endian, scaled by 100)
         int16_t remaining_cap = (int16_t)(bms_values->remaining_capacity * 100);
-        payload[idx++] = (remaining_cap >> 8) & 0xFF;
         payload[idx++] = remaining_cap & 0xFF;
+        payload[idx++] = (remaining_cap >> 8) & 0xFF;
 
-        // Nominal capacity (2 bytes, big-endian, scaled by 100)
+        // Nominal capacity (2 bytes, little-endian, scaled by 100)
         int16_t nominal_cap = (int16_t)(bms_values->nominal_capacity * 100);
-        payload[idx++] = (nominal_cap >> 8) & 0xFF;
         payload[idx++] = nominal_cap & 0xFF;
+        payload[idx++] = (nominal_cap >> 8) & 0xFF;
 
         // Number of cells (1 byte)
         payload[idx++] = bms_values->num_cells;
 
-        // Cell voltages (2 bytes each, big-endian, scaled by 1000, up to 16 cells)
+        // Cell voltages (2 bytes each, little-endian, scaled by 1000, up to 16 cells)
         for (int i = 0; i < 16; i++) {
             int16_t cell_voltage;
             if (i < bms_values->num_cells) {
@@ -532,8 +533,8 @@ void usb_serial_send_stream_data(void) {
             } else {
                 cell_voltage = 0;
             }
-            payload[idx++] = (cell_voltage >> 8) & 0xFF;
             payload[idx++] = cell_voltage & 0xFF;
+            payload[idx++] = (cell_voltage >> 8) & 0xFF;
         }
     } else {
         // No BMS data available - send zeros (8 bytes for basic + 1 for num_cells + 32 for cells = 41 bytes)

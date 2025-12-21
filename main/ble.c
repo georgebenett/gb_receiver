@@ -744,31 +744,31 @@ static void send_telemetry_task(void *pvParameters) {
             int32_t rpm = (int32_t)vesc_values->rpm;
             int16_t voltage = (int16_t)(vesc_values->v_in * 100);
 
-            // Pack temp_mos (big-endian)
-            buffer[idx++] = (temp_mos >> 8) & 0xFF;
+            // Pack temp_mos (little-endian)
             buffer[idx++] = temp_mos & 0xFF;
+            buffer[idx++] = (temp_mos >> 8) & 0xFF;
 
-            // Pack temp_motor (big-endian)
-            buffer[idx++] = (temp_motor >> 8) & 0xFF;
+            // Pack temp_motor (little-endian)
             buffer[idx++] = temp_motor & 0xFF;
+            buffer[idx++] = (temp_motor >> 8) & 0xFF;
 
-            // Pack current_motor (big-endian)
-            buffer[idx++] = (current_motor >> 8) & 0xFF;
+            // Pack current_motor (little-endian)
             buffer[idx++] = current_motor & 0xFF;
+            buffer[idx++] = (current_motor >> 8) & 0xFF;
 
-            // Pack current_in (big-endian)
-            buffer[idx++] = (current_in >> 8) & 0xFF;
+            // Pack current_in (little-endian)
             buffer[idx++] = current_in & 0xFF;
+            buffer[idx++] = (current_in >> 8) & 0xFF;
 
-            // Pack RPM (big-endian)
-            buffer[idx++] = (rpm >> 24) & 0xFF;
-            buffer[idx++] = (rpm >> 16) & 0xFF;
-            buffer[idx++] = (rpm >> 8) & 0xFF;
+            // Pack RPM (little-endian)
             buffer[idx++] = rpm & 0xFF;
+            buffer[idx++] = (rpm >> 8) & 0xFF;
+            buffer[idx++] = (rpm >> 16) & 0xFF;
+            buffer[idx++] = (rpm >> 24) & 0xFF;
 
-            // Pack voltage (big-endian)
-            buffer[idx++] = (voltage >> 8) & 0xFF;
+            // Pack voltage (little-endian)
             buffer[idx++] = voltage & 0xFF;
+            buffer[idx++] = (voltage >> 8) & 0xFF;
 
             // Pack BMS data
             int16_t bms_total_voltage = (int16_t)(bms_values->total_voltage * 100);
@@ -776,20 +776,20 @@ static void send_telemetry_task(void *pvParameters) {
             int16_t remaining_capacity = (int16_t)(bms_values->remaining_capacity * 100);
             int16_t nominal_capacity = (int16_t)(bms_values->nominal_capacity * 100);
 
-            // Pack BMS values (big-endian)
-            buffer[idx++] = (bms_total_voltage >> 8) & 0xFF;
+            // Pack BMS values (little-endian)
             buffer[idx++] = bms_total_voltage & 0xFF;
-            buffer[idx++] = (bms_current >> 8) & 0xFF;
+            buffer[idx++] = (bms_total_voltage >> 8) & 0xFF;
             buffer[idx++] = bms_current & 0xFF;
-            buffer[idx++] = (remaining_capacity >> 8) & 0xFF;
+            buffer[idx++] = (bms_current >> 8) & 0xFF;
             buffer[idx++] = remaining_capacity & 0xFF;
-            buffer[idx++] = (nominal_capacity >> 8) & 0xFF;
+            buffer[idx++] = (remaining_capacity >> 8) & 0xFF;
             buffer[idx++] = nominal_capacity & 0xFF;
+            buffer[idx++] = (nominal_capacity >> 8) & 0xFF;
 
             // Pack number of cells
             buffer[idx++] = bms_values->num_cells;
 
-            // Pack cell voltages (big-endian)
+            // Pack cell voltages (little-endian)
             for (int i = 0; i < 16; i++) {
                 int16_t cell_voltage;
                 if (i < bms_values->num_cells) {
@@ -797,8 +797,8 @@ static void send_telemetry_task(void *pvParameters) {
                 } else {
                     cell_voltage = 0;
                 }
-                buffer[idx++] = (cell_voltage >> 8) & 0xFF;
                 buffer[idx++] = cell_voltage & 0xFF;
+                buffer[idx++] = (cell_voltage >> 8) & 0xFF;
             }
 
             // Pack compact mcconf temp data (motor poles, gear ratio, wheel diameter)
@@ -814,10 +814,10 @@ static void send_telemetry_task(void *pvParameters) {
             }
 
             buffer[idx++] = motor_poles;
-            buffer[idx++] = (gear_ratio_scaled >> 8) & 0xFF;
             buffer[idx++] = gear_ratio_scaled & 0xFF;
-            buffer[idx++] = (wheel_diameter_scaled >> 8) & 0xFF;
+            buffer[idx++] = (gear_ratio_scaled >> 8) & 0xFF;
             buffer[idx++] = wheel_diameter_scaled & 0xFF;
+            buffer[idx++] = (wheel_diameter_scaled >> 8) & 0xFF;
 
             // Send notification
             esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id,
