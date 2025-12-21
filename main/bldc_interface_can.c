@@ -89,7 +89,7 @@ void bldc_interface_can_init(void) {
     num_detected_vescs = 0;
     vesc_detection_logged = false;
     memset(detected_vescs, 0, sizeof(detected_vescs));
-    
+
     ESP_LOGI(TAG, "CAN interface initialized - auto-detecting VESC ID(s)");
 }
 
@@ -153,9 +153,9 @@ static void detect_vesc_id(uint8_t id) {
     if (id == 255) {
         return;
     }
-    
+
     uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
-    
+
     // Check if we already know this VESC
     for (int i = 0; i < num_detected_vescs; i++) {
         if (detected_vescs[i].id == id) {
@@ -164,13 +164,13 @@ static void detect_vesc_id(uint8_t id) {
             return;
         }
     }
-    
+
     // New VESC detected - add it
     if (num_detected_vescs < MAX_DETECTED_VESCS) {
         detected_vescs[num_detected_vescs].id = id;
         detected_vescs[num_detected_vescs].last_seen_ms = now_ms;
         detected_vescs[num_detected_vescs].active = true;
-        
+
         // Set as primary if it's the first one
         if (primary_vesc_id == 0) {
             primary_vesc_id = id;
@@ -178,7 +178,7 @@ static void detect_vesc_id(uint8_t id) {
         } else {
             ESP_LOGI(TAG, "Additional VESC detected: ID=%d (primary: %d)", id, primary_vesc_id);
         }
-        
+
         num_detected_vescs++;
     } else {
         ESP_LOGW(TAG, "Maximum VESC count reached, ignoring ID=%d", id);
@@ -189,14 +189,13 @@ static void detect_vesc_id(uint8_t id) {
 void bldc_interface_can_set_duty(float duty) {
     uint8_t vesc_id = get_primary_vesc_id();
     if (vesc_id == 0) {
-        ESP_LOGW(TAG, "No VESC detected, cannot set duty");
         return;
     }
-    
+
     uint8_t buffer[4];
     int32_t index = 0;
     buffer_append_int32(buffer, (int32_t)(duty * 100000.0), &index);
-    
+
     uint32_t eid = vesc_id | ((uint32_t)CAN_PACKET_SET_DUTY << 8);
     can_transmit_eid(eid, buffer, 4);
 }
@@ -204,14 +203,13 @@ void bldc_interface_can_set_duty(float duty) {
 void bldc_interface_can_set_current(float current) {
     uint8_t vesc_id = get_primary_vesc_id();
     if (vesc_id == 0) {
-        ESP_LOGW(TAG, "No VESC detected, cannot set current");
         return;
     }
-    
+
     uint8_t buffer[4];
     int32_t index = 0;
     buffer_append_int32(buffer, (int32_t)(current * 1000.0), &index);
-    
+
     uint32_t eid = vesc_id | ((uint32_t)CAN_PACKET_SET_CURRENT << 8);
     can_transmit_eid(eid, buffer, 4);
 }
@@ -219,14 +217,13 @@ void bldc_interface_can_set_current(float current) {
 void bldc_interface_can_set_current_brake(float current) {
     uint8_t vesc_id = get_primary_vesc_id();
     if (vesc_id == 0) {
-        ESP_LOGW(TAG, "No VESC detected, cannot set brake current");
         return;
     }
-    
+
     uint8_t buffer[4];
     int32_t index = 0;
     buffer_append_int32(buffer, (int32_t)(current * 1000.0), &index);
-    
+
     uint32_t eid = vesc_id | ((uint32_t)CAN_PACKET_SET_CURRENT_BRAKE << 8);
     can_transmit_eid(eid, buffer, 4);
 }
@@ -234,14 +231,13 @@ void bldc_interface_can_set_current_brake(float current) {
 void bldc_interface_can_set_rpm(float rpm) {
     uint8_t vesc_id = get_primary_vesc_id();
     if (vesc_id == 0) {
-        ESP_LOGW(TAG, "No VESC detected, cannot set RPM");
         return;
     }
-    
+
     uint8_t buffer[4];
     int32_t index = 0;
     buffer_append_int32(buffer, (int32_t)rpm, &index);
-    
+
     uint32_t eid = vesc_id | ((uint32_t)CAN_PACKET_SET_RPM << 8);
     can_transmit_eid(eid, buffer, 4);
 }
@@ -249,14 +245,13 @@ void bldc_interface_can_set_rpm(float rpm) {
 void bldc_interface_can_set_pos(float pos) {
     uint8_t vesc_id = get_primary_vesc_id();
     if (vesc_id == 0) {
-        ESP_LOGW(TAG, "No VESC detected, cannot set position");
         return;
     }
-    
+
     uint8_t buffer[4];
     int32_t index = 0;
     buffer_append_int32(buffer, (int32_t)(pos * 1000000.0), &index);
-    
+
     uint32_t eid = vesc_id | ((uint32_t)CAN_PACKET_SET_POS << 8);
     can_transmit_eid(eid, buffer, 4);
 }
@@ -264,14 +259,13 @@ void bldc_interface_can_set_pos(float pos) {
 void bldc_interface_can_set_current_rel(float current_rel) {
     uint8_t vesc_id = get_primary_vesc_id();
     if (vesc_id == 0) {
-        ESP_LOGW(TAG, "No VESC detected, cannot set relative current");
         return;
     }
-    
+
     uint8_t buffer[4];
     int32_t index = 0;
     buffer_append_float32(buffer, current_rel, 1e5, &index);
-    
+
     uint32_t eid = vesc_id | ((uint32_t)CAN_PACKET_SET_CURRENT_REL << 8);
     can_transmit_eid(eid, buffer, 4);
 }
@@ -279,14 +273,13 @@ void bldc_interface_can_set_current_rel(float current_rel) {
 void bldc_interface_can_set_current_brake_rel(float current_rel) {
     uint8_t vesc_id = get_primary_vesc_id();
     if (vesc_id == 0) {
-        ESP_LOGW(TAG, "No VESC detected, cannot set relative brake current");
         return;
     }
-    
+
     uint8_t buffer[4];
     int32_t index = 0;
     buffer_append_float32(buffer, current_rel, 1e5, &index);
-    
+
     uint32_t eid = vesc_id | ((uint32_t)CAN_PACKET_SET_CURRENT_BRAKE_REL << 8);
     can_transmit_eid(eid, buffer, 4);
 }
@@ -294,14 +287,13 @@ void bldc_interface_can_set_current_brake_rel(float current_rel) {
 void bldc_interface_can_set_handbrake(float current) {
     uint8_t vesc_id = get_primary_vesc_id();
     if (vesc_id == 0) {
-        ESP_LOGW(TAG, "No VESC detected, cannot set handbrake");
         return;
     }
-    
+
     uint8_t buffer[4];
     int32_t index = 0;
     buffer_append_float32(buffer, current, 1e3, &index);
-    
+
     uint32_t eid = vesc_id | ((uint32_t)CAN_PACKET_SET_CURRENT_HANDBRAKE << 8);
     can_transmit_eid(eid, buffer, 4);
 }
@@ -309,14 +301,13 @@ void bldc_interface_can_set_handbrake(float current) {
 void bldc_interface_can_set_handbrake_rel(float current_rel) {
     uint8_t vesc_id = get_primary_vesc_id();
     if (vesc_id == 0) {
-        ESP_LOGW(TAG, "No VESC detected, cannot set relative handbrake");
         return;
     }
-    
+
     uint8_t buffer[4];
     int32_t index = 0;
     buffer_append_float32(buffer, current_rel, 1e5, &index);
-    
+
     uint32_t eid = vesc_id | ((uint32_t)CAN_PACKET_SET_CURRENT_HANDBRAKE_REL << 8);
     can_transmit_eid(eid, buffer, 4);
 }
@@ -325,13 +316,12 @@ void bldc_interface_can_set_handbrake_rel(float current_rel) {
 void bldc_interface_can_send_command(uint8_t *data, uint16_t len) {
     uint8_t vesc_id = get_primary_vesc_id();
     if (vesc_id == 0) {
-        ESP_LOGW(TAG, "No VESC detected, cannot send command");
         return;
     }
-    
+
     uint8_t send_buffer[8];
     uint8_t controller_id = vesc_id;
-    
+
     if (len <= 6) {
         // Short buffer - single frame
         uint32_t ind = 0;
@@ -339,7 +329,7 @@ void bldc_interface_can_send_command(uint8_t *data, uint16_t len) {
         send_buffer[ind++] = 0;  // send = 0 (process packet)
         memcpy(send_buffer + ind, data, len);
         ind += len;
-        
+
         uint32_t eid = vesc_id | ((uint32_t)CAN_PACKET_PROCESS_SHORT_BUFFER << 8);
         can_transmit_eid(eid, send_buffer, ind);
     } else {
@@ -348,39 +338,39 @@ void bldc_interface_can_send_command(uint8_t *data, uint16_t len) {
         uint16_t offset = 0;
         for (uint16_t i = 0; i < len && i < 255; i += 7) {
             uint8_t frag_len = (len - i < 7) ? (len - i) : 7;
-            
+
             send_buffer[0] = (uint8_t)(i & 0xFF);  // Offset (low byte)
             memcpy(send_buffer + 1, data + i, frag_len);
-            
+
             uint32_t eid = vesc_id | ((uint32_t)CAN_PACKET_FILL_RX_BUFFER << 8);
             can_transmit_eid(eid, send_buffer, frag_len + 1);
-            
+
             offset += frag_len;
         }
-        
+
         // Step 2: Continue with long frames (for offsets > 255, 6 bytes per frame)
         for (uint16_t i = offset; i < len; i += 6) {
             uint8_t frag_len = (len - i < 6) ? (len - i) : 6;
-            
+
             send_buffer[0] = (i >> 8) & 0xFF;  // Offset high byte
             send_buffer[1] = i & 0xFF;         // Offset low byte
             memcpy(send_buffer + 2, data + i, frag_len);
-            
+
             uint32_t eid = vesc_id | ((uint32_t)CAN_PACKET_FILL_RX_BUFFER_LONG << 8);
             can_transmit_eid(eid, send_buffer, frag_len + 2);
         }
-        
+
         // Step 3: Process buffer
         uint32_t ind = 0;
         send_buffer[ind++] = controller_id;
         send_buffer[ind++] = 0;  // send = 0
         send_buffer[ind++] = (len >> 8) & 0xFF;
         send_buffer[ind++] = len & 0xFF;
-        
+
         uint16_t crc = crc16(data, len);
         send_buffer[ind++] = (crc >> 8) & 0xFF;
         send_buffer[ind++] = crc & 0xFF;
-        
+
         uint32_t eid = vesc_id | ((uint32_t)CAN_PACKET_PROCESS_RX_BUFFER << 8);
         can_transmit_eid(eid, send_buffer, ind);
     }
@@ -390,7 +380,7 @@ void bldc_interface_can_send_command(uint8_t *data, uint16_t len) {
 void bldc_interface_can_get_values(void) {
     uint8_t cmd = COMM_GET_VALUES;
     // Request values silently (no logging needed for normal operation)
-    bldc_interface_can_send_command(&cmd, 1);   
+    bldc_interface_can_send_command(&cmd, 1);
 }
 
 void bldc_interface_can_get_mcconf_temp(void) {
@@ -428,18 +418,18 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
     uint8_t controller_id = eid & 0xFF;
     CAN_PACKET_ID cmd = (CAN_PACKET_ID)((eid >> 8) & 0xFF);
     static uint32_t processed_count = 0;
-    
+
     // Accept all VESC STATUS messages for auto-detection
     // Also accept broadcast (255) and responses from detected VESCs
-    bool is_status_message = (cmd == CAN_PACKET_STATUS || 
-                              cmd == CAN_PACKET_STATUS_2 || 
-                              cmd == CAN_PACKET_STATUS_3 || 
-                              cmd == CAN_PACKET_STATUS_4 || 
+    bool is_status_message = (cmd == CAN_PACKET_STATUS ||
+                              cmd == CAN_PACKET_STATUS_2 ||
+                              cmd == CAN_PACKET_STATUS_3 ||
+                              cmd == CAN_PACKET_STATUS_4 ||
                               cmd == CAN_PACKET_STATUS_5);
-    
+
     bool is_broadcast = (controller_id == 255);
     bool is_detected_vesc = false;
-    
+
     // Check if this is from a detected VESC
     for (int i = 0; i < num_detected_vescs; i++) {
         if (detected_vescs[i].id == controller_id && detected_vescs[i].active) {
@@ -447,23 +437,23 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
             break;
         }
     }
-    
+
     // Accept STATUS messages (for auto-detection), broadcast, or detected VESCs
     if (!is_status_message && !is_broadcast && !is_detected_vesc) {
         // Unknown VESC - could be another device on the bus, ignore silently
         return;
     }
-    
+
     // Auto-detect VESC ID from STATUS messages
     if (is_status_message && controller_id != 255) {
         detect_vesc_id(controller_id);
     }
-    
+
     processed_count++;
     // Log processed frames at debug level (can be enabled if needed)
-    ESP_LOGD(TAG, "Processing frame: ID=%d cmd=%d len=%d (processed %lu)", 
+    ESP_LOGD(TAG, "Processing frame: ID=%d cmd=%d len=%d (processed %lu)",
              controller_id, cmd, len, processed_count);
-    
+
     switch (cmd) {
         case CAN_PACKET_STATUS: {
             // Decode status message (rpm, current_motor, duty_now)
@@ -474,7 +464,7 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
             }
             break;
         }
-        
+
         case CAN_PACKET_STATUS_2: {
             // Decode status 2 message (amp_hours, amp_hours_charged)
             if (controller_id == get_primary_vesc_id() || primary_vesc_id == 0) {
@@ -483,7 +473,7 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
             }
             break;
         }
-        
+
         case CAN_PACKET_STATUS_3: {
             // Decode status 3 message (watt_hours, watt_hours_charged)
             if (controller_id == get_primary_vesc_id() || primary_vesc_id == 0) {
@@ -492,7 +482,7 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
             }
             break;
         }
-        
+
         case CAN_PACKET_STATUS_4: {
             // Decode status 4 message (temp_fet, temp_motor, current_in, pid_pos)
             if (controller_id == get_primary_vesc_id() || primary_vesc_id == 0) {
@@ -501,7 +491,7 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
             }
             break;
         }
-        
+
         case CAN_PACKET_STATUS_5: {
             // Decode status 5 message (tachometer, v_in)
             if (controller_id == get_primary_vesc_id() || primary_vesc_id == 0) {
@@ -510,11 +500,11 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
             }
             break;
         }
-        
+
         case CAN_PACKET_PROCESS_SHORT_BUFFER: {
             // Short response (≤6 bytes) - this is how VESC sends responses
             // Accept responses from primary VESC or any detected VESC
-            if (controller_id == get_primary_vesc_id() || 
+            if (controller_id == get_primary_vesc_id() ||
                 (controller_id != 255 && is_detected_vesc)) {
                 if (len < 2) {
                     ESP_LOGW(TAG, "Short buffer too small: len=%d", len);
@@ -522,10 +512,10 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
                 }
                 // sender_id = data[0];  // Not used
                 // send_type = data[1];  // Not used
-                
-                ESP_LOGD(TAG, "VESC response received from ID=%d: sender_id=%d send_type=%d len=%d cmd=0x%02X", 
+
+                ESP_LOGD(TAG, "VESC response received from ID=%d: sender_id=%d send_type=%d len=%d cmd=0x%02X",
                          controller_id, data[0], data[1], len, (len > 2) ? data[2] : 0);
-                
+
                 // Process the response packet (skip sender_id and send_type)
                 if (len > 2) {
                     bldc_interface_process_packet(data + 2, len - 2);
@@ -533,7 +523,7 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
             }
             break;
         }
-        
+
         case CAN_PACKET_FILL_RX_BUFFER:
         case CAN_PACKET_FILL_RX_BUFFER_LONG:
         case CAN_PACKET_PROCESS_RX_BUFFER: {
@@ -542,7 +532,7 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
             ESP_LOGD(TAG, "Command frame (not response): cmd=%d", cmd);
             break;
         }
-        
+
         default:
             // Other status messages or unhandled packets
             ESP_LOGD(TAG, "Unhandled packet type: cmd=%d", cmd);
@@ -552,69 +542,69 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
 
 static void process_status_message(uint8_t id, uint8_t *data, uint8_t len) {
     if (len < 8) return;
-    
+
     int32_t ind = 0;
-    
+
     accumulated_values.rpm = (float)buffer_get_int32(data, &ind);
     accumulated_values.current_motor = (float)buffer_get_int16(data, &ind) / 10.0;
     accumulated_values.duty_now = (float)buffer_get_int16(data, &ind) / 1000.0;
     accumulated_values.vesc_id = id;
     status_received = true;
-    
+
     update_and_notify_values();
 }
 
 static void process_status_2_message(uint8_t id, uint8_t *data, uint8_t len) {
     if (len < 8) return;
-    
+
     int32_t ind = 0;
-    
+
     accumulated_values.amp_hours = (float)buffer_get_int32(data, &ind) / 1e4;
     accumulated_values.amp_hours_charged = (float)buffer_get_int32(data, &ind) / 1e4;
     accumulated_values.vesc_id = id;
     status_2_received = true;
-    
+
     update_and_notify_values();
 }
 
 static void process_status_3_message(uint8_t id, uint8_t *data, uint8_t len) {
     if (len < 8) return;
-    
+
     int32_t ind = 0;
-    
+
     accumulated_values.watt_hours = (float)buffer_get_int32(data, &ind) / 1e4;
     accumulated_values.watt_hours_charged = (float)buffer_get_int32(data, &ind) / 1e4;
     accumulated_values.vesc_id = id;
     status_3_received = true;
-    
+
     update_and_notify_values();
 }
 
 static void process_status_4_message(uint8_t id, uint8_t *data, uint8_t len) {
     if (len < 8) return;
-    
+
     int32_t ind = 0;
-    
+
     accumulated_values.temp_mos = (float)buffer_get_int16(data, &ind) / 10.0;
     accumulated_values.temp_motor = (float)buffer_get_int16(data, &ind) / 10.0;
     accumulated_values.current_in = (float)buffer_get_int16(data, &ind) / 10.0;
     accumulated_values.pid_pos = (float)buffer_get_int16(data, &ind) / 50.0;
     accumulated_values.vesc_id = id;
     status_4_received = true;
-    
+
     update_and_notify_values();
 }
 
 static void process_status_5_message(uint8_t id, uint8_t *data, uint8_t len) {
     if (len < 6) return;
-    
+
     int32_t ind = 0;
-    
+
     accumulated_values.tachometer = buffer_get_int32(data, &ind);
     accumulated_values.v_in = (float)buffer_get_int16(data, &ind) / 10.0;
     accumulated_values.vesc_id = id;
     status_5_received = true;
-    
+
     update_and_notify_values();
 }
 
@@ -629,15 +619,15 @@ static void update_and_notify_values(void) {
 // Check for inactive VESCs (haven't sent STATUS messages recently)
 static void check_vesc_activity(void) {
     uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
-    
+
     for (int i = 0; i < num_detected_vescs; i++) {
         if (detected_vescs[i].active) {
             uint32_t time_since_last_seen = now_ms - detected_vescs[i].last_seen_ms;
             if (time_since_last_seen > VESC_DETECTION_TIMEOUT_MS) {
-                ESP_LOGW(TAG, "VESC ID=%d inactive (no STATUS messages for %lu ms)", 
+                ESP_LOGW(TAG, "VESC ID=%d inactive (no STATUS messages for %lu ms)",
                          detected_vescs[i].id, time_since_last_seen);
                 detected_vescs[i].active = false;
-                
+
                 // If primary VESC went inactive, try to find another active one
                 if (detected_vescs[i].id == primary_vesc_id) {
                     primary_vesc_id = 0;  // Reset primary
@@ -663,25 +653,29 @@ void bldc_interface_can_rx_task(void *pvParameters) {
     uint32_t frame_count = 0;
     uint32_t no_frame_count = 0;
     uint32_t last_activity_check_ms = 0;
-    
+
     ESP_LOGI(TAG, "CAN RX task started");
-    
+
     while (1) {
         uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
-        
+
         // Check VESC activity every second
         if (now_ms - last_activity_check_ms >= 1000) {
             check_vesc_activity();
             last_activity_check_ms = now_ms;
         }
-        
+
         if (twai_receive(&message, pdMS_TO_TICKS(100)) == ESP_OK) {
             no_frame_count = 0;  // Reset counter when we receive a frame
             if (message.flags & TWAI_MSG_FLAG_EXTD) {
                 // Extended ID frame
                 frame_count++;
-                if (frame_count == 1 || frame_count % 100 == 0) {
-                    ESP_LOGI(TAG, "RX: EID=0x%08lX len=%d (total frames: %lu)", 
+                // Log first frame only, periodic logging moved to DEBUG level
+                if (frame_count == 1) {
+                    ESP_LOGI(TAG, "RX: EID=0x%08lX len=%d (first frame)",
+                             message.identifier, message.data_length_code);
+                } else if (frame_count % 1000 == 0) {
+                    ESP_LOGD(TAG, "RX: EID=0x%08lX len=%d (total frames: %lu)",
                              message.identifier, message.data_length_code, frame_count);
                 }
                 bldc_interface_can_process_rx_frame(message.identifier, message.data, message.data_length_code);
