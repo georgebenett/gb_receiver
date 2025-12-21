@@ -432,7 +432,7 @@ void usb_serial_send_stream_data(void) {
     extern mc_values* get_stored_vesc_values(void);
     extern bms_values_t* get_stored_bms_values(void);
 
-    uint8_t payload[128];
+    uint8_t payload[256];  // Increased size for cell voltages
     uint16_t idx = 0;
 
     // Timestamp (4 bytes, little-endian)
@@ -465,6 +465,16 @@ void usb_serial_send_stream_data(void) {
         payload[idx++] = (current_motor >> 8) & 0xFF;
         payload[idx++] = current_motor & 0xFF;
 
+        // Current input (2 bytes, big-endian, scaled by 100)
+        int16_t current_input = (int16_t)(vesc_values->current_in * 100);
+        payload[idx++] = (current_input >> 8) & 0xFF;
+        payload[idx++] = current_input & 0xFF;
+
+        // Duty cycle (2 bytes, big-endian, scaled by 1000)
+        int16_t duty = (int16_t)(vesc_values->duty_now * 1000);
+        payload[idx++] = (duty >> 8) & 0xFF;
+        payload[idx++] = duty & 0xFF;
+
         // RPM (4 bytes, big-endian)
         int32_t rpm = (int32_t)vesc_values->rpm;
         payload[idx++] = (rpm >> 24) & 0xFF;
@@ -482,8 +492,8 @@ void usb_serial_send_stream_data(void) {
         payload[idx++] = (temp_motor >> 8) & 0xFF;
         payload[idx++] = temp_motor & 0xFF;
     } else {
-        // No VESC data available - send zeros
-        for (int i = 0; i < 12; i++) {
+        // No VESC data available - send zeros (16 bytes total)
+        for (int i = 0; i < 16; i++) {
             payload[idx++] = 0;
         }
     }
@@ -505,9 +515,29 @@ void usb_serial_send_stream_data(void) {
         int16_t remaining_cap = (int16_t)(bms_values->remaining_capacity * 100);
         payload[idx++] = (remaining_cap >> 8) & 0xFF;
         payload[idx++] = remaining_cap & 0xFF;
+
+        // Nominal capacity (2 bytes, big-endian, scaled by 100)
+        int16_t nominal_cap = (int16_t)(bms_values->nominal_capacity * 100);
+        payload[idx++] = (nominal_cap >> 8) & 0xFF;
+        payload[idx++] = nominal_cap & 0xFF;
+
+        // Number of cells (1 byte)
+        payload[idx++] = bms_values->num_cells;
+
+        // Cell voltages (2 bytes each, big-endian, scaled by 1000, up to 16 cells)
+        for (int i = 0; i < 16; i++) {
+            int16_t cell_voltage;
+            if (i < bms_values->num_cells) {
+                cell_voltage = (int16_t)(bms_values->cell_voltages[i] * 1000);
+            } else {
+                cell_voltage = 0;
+            }
+            payload[idx++] = (cell_voltage >> 8) & 0xFF;
+            payload[idx++] = cell_voltage & 0xFF;
+        }
     } else {
-        // No BMS data available - send zeros
-        for (int i = 0; i < 6; i++) {
+        // No BMS data available - send zeros (8 bytes for basic + 1 for num_cells + 32 for cells = 41 bytes)
+        for (int i = 0; i < 41; i++) {
             payload[idx++] = 0;
         }
     }

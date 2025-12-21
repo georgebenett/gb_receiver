@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtSerialPort import QSerialPort
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
-from PyQt6.QtGui import QColor, QPalette
+from PyQt6.QtGui import QColor, QPalette, QScreen
 import json
 import time
 import os
@@ -20,10 +20,16 @@ class TelemetryDisplay(QMainWindow):
         # Set window flags to remove decorations
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
 
-        # Set fixed 16:9 size (1920x1080)
-        self.setMinimumSize(1920, 1080)
-        self.setMaximumSize(1920, 1080)
-        self.setGeometry(0, 0, 1920, 1080)  # Position at (0,0) with 1920x1080 size
+        # Get screen resolution
+        screen = QApplication.primaryScreen()
+        screen_geometry = screen.geometry()
+        screen_width = screen_geometry.width()
+        screen_height = screen_geometry.height()
+        
+        # Set window size to match screen resolution
+        self.setMinimumSize(screen_width, screen_height)
+        self.setMaximumSize(screen_width, screen_height)
+        self.setGeometry(0, 0, screen_width, screen_height)  # Position at (0,0) with screen size
 
         # Create main widget and layout
         main_widget = QWidget()
@@ -595,7 +601,10 @@ class TelemetryDisplay(QMainWindow):
     def toggle_fullscreen(self):
         if self.isFullScreen():
             self.showNormal()
-            self.setGeometry(0, 0, 1920, 1080)
+            # Restore to screen size
+            screen = QApplication.primaryScreen()
+            screen_geometry = screen.geometry()
+            self.setGeometry(0, 0, screen_geometry.width(), screen_geometry.height())
         else:
             self.showFullScreen()
 
