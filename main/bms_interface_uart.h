@@ -15,8 +15,5 @@ esp_err_t bms_interface_uart_init(void);
  */
 void bms_interface_uart_send_function(unsigned char *data, unsigned int len);
 
-/**
- * @brief UART receive task
- * @param pvParameters Task parameters (unused)
- */
-void bms_interface_uart_rx_task(void *pvParameters);
+// Note: VESC communication now uses CAN, so UART RX task is no longer needed
+// The BMS itself still uses UART_NUM_2 for its own communication

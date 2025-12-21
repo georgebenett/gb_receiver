@@ -5,7 +5,7 @@ idf_component_register(SRCS
             "crc.c"
             "buffer.c"
             "bldc_interface.c"
-            "bldc_interface_uart.c"
+            "bldc_interface_can.c"
             "bms_interface_uart.c"
             "packet.c"
             "led.c"

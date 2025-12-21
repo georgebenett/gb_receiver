@@ -14,7 +14,7 @@
 #include "bms.h"
 #include "bldc_interface.h"
 #include "bms_interface_uart.h"
-#include "bldc_interface_uart.h"
+#include "bldc_interface_can.h"
 #include "aux_output.h"
 #include "usb_serial.h"
 
@@ -23,12 +23,29 @@ static const char *TAG = "MAIN";
 static mc_values stored_values;
 static bool uart_logging_enabled = false;
 static mc_temp_config_t stored_mc_temp_conf = {0};
+static uint32_t vesc_log_counter = 0;
 
 // Forward declarations
 mc_temp_config_t* get_stored_mc_temp_config(void);
 
 static void bldc_values_received(mc_values *values) {
     stored_values = *values;
+    
+    // Log VESC data every 20 updates (~1 second at ~20Hz update rate)
+    vesc_log_counter++;
+    if (vesc_log_counter >= 20) {
+        vesc_log_counter = 0;
+        ESP_LOGI(TAG, "VESC Values: v_in=%.2fV, current_in=%.2fA, current_motor=%.2fA, erpm=%.0f, duty=%.1f%%, temp_mos=%.1f°C, temp_motor=%.1f°C, fault=%d",
+                 values->v_in, 
+                 values->current_in, 
+                 values->current_motor, 
+                 values->rpm, 
+                 values->duty_now * 100.0f,
+                 values->temp_mos,
+                 values->temp_motor,
+                 values->fault_code);
+    }
+    
     bms_values_t* bms_data = get_stored_bms_values();
     if (bms_data != NULL) {
         send_telemetry_data(&stored_values, bms_data);
@@ -52,7 +69,7 @@ static void vesc_task(void *pvParameters) {
     const uint32_t CONFIG_RETRY_INTERVAL = 100; // Retry every 100 iterations = 5 seconds
 
     while (1) {
-        bldc_interface_get_values();
+        bldc_interface_can_get_values();
 
         // Periodically check if motor config is valid, and retry if not
         // This ensures config is available even if initial request failed or VESC was not ready
@@ -62,7 +79,7 @@ static void vesc_task(void *pvParameters) {
             mc_temp_config_t* config = get_stored_mc_temp_config();
             if (config == NULL || !config->valid) {
                 ESP_LOGD(TAG, "Motor config invalid, requesting...");
-                bldc_interface_get_mcconf_temp();
+                bldc_interface_can_get_mcconf_temp();
             }
         }
 
@@ -197,15 +214,24 @@ void app_main(void) {
 
     throttle_init();
     bms_interface_uart_init();
-    bldc_interface_uart_init(bms_interface_uart_send_function);
+    
+    // Initialize CAN interface for VESC communication (replaces UART)
+    bldc_interface_can_init();
+    bldc_interface_can_set_rx_value_func(bldc_values_received);
+    bldc_interface_can_set_rx_mcconf_temp_func(mcconf_temp_received);
+    
+    // Make bldc_interface use CAN for sending packets (for throttle, etc.)
+    bldc_interface_init(bldc_interface_can_send_packet);
     bldc_interface_set_rx_value_func(bldc_values_received);
     bldc_interface_set_rx_mcconf_temp_func(mcconf_temp_received);
 
     // Request motor config at startup to ensure it's available before clients connect
     // Give VESC a moment to initialize, then request config
     vTaskDelay(pdMS_TO_TICKS(500));
-    bldc_interface_get_mcconf_temp();
+    bldc_interface_can_get_mcconf_temp();
 
-    xTaskCreate(vesc_task, "vesc_task", 2048, NULL, 5, NULL);
-    xTaskCreate(uart_command_handler_task, "uart_cmd_handler", 2048, NULL, 5, NULL);
+    // Start CAN RX task to process incoming CAN frames
+    xTaskCreate(bldc_interface_can_rx_task, "can_rx_task", 4096, NULL, 5, NULL);
+    xTaskCreate(vesc_task, "vesc_task", 4096, NULL, 5, NULL);
+    xTaskCreate(uart_command_handler_task, "uart_cmd_handler", 4096, NULL, 5, NULL);
 }
