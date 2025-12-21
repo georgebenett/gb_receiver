@@ -29,6 +29,8 @@
 #include <string.h>
 #include "esp_log.h"
 
+static const char *TAG = "BLDC_IF";
+
 // Private variables
 static unsigned char send_buffer[1024];
 
@@ -141,6 +143,7 @@ void bldc_interface_process_packet(unsigned char *data, unsigned int len) {
 		break;
 
 	case COMM_GET_VALUES:
+		ESP_LOGI(TAG, "Parsing COMM_GET_VALUES response (len=%d)", len);
 		ind = 0;
 		values.temp_mos = buffer_get_float16(data, 1e1, &ind);
 		values.temp_motor = buffer_get_float16(data, 1e1, &ind);
@@ -171,8 +174,13 @@ void bldc_interface_process_packet(unsigned char *data, unsigned int len) {
 			values.vesc_id = 255;
 		}
 
+		ESP_LOGI(TAG, "Parsed values: v_in=%.2fV, current_in=%.2fA, rpm=%.0f", 
+		         values.v_in, values.current_in, values.rpm);
+
 		if (rx_value_func) {
 			rx_value_func(&values);
+		} else {
+			ESP_LOGW(TAG, "No rx_value_func callback set!");
 		}
 		break;
 

@@ -24,7 +24,8 @@ static void send_nunchuck_throttle(void *pvParameters);
 esp_err_t throttle_init(void)
 {
     // Create task for nunchuck testing
-    xTaskCreate(send_nunchuck_throttle, "nunchuck_test", 2048, NULL, 5, NULL);
+    // Increased stack size from 2048 to 4096 to prevent stack overflow
+    xTaskCreate(send_nunchuck_throttle, "nunchuck_test", 4096, NULL, 5, NULL);
 
     ESP_LOGI(THROTTLE_TAG, "Throttle initialized");
 
