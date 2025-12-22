@@ -8,7 +8,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "hw_config.h"
-#include "datatypes.h"  // Add this for mc_values struct
+#include "datatypes.h"
 #include <stdint.h>
 #include <stddef.h>
 

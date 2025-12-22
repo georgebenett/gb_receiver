@@ -42,13 +42,11 @@ extern mc_temp_config_t* get_stored_mc_temp_config(void);
 #define SPP_PROFILE_NUM             1
 #define SPP_PROFILE_APP_IDX         0
 #define ESP_SPP_APP_ID              0x56
-#define SAMPLE_DEVICE_NAME          CLIENT_NAME    //The Device Name Characteristics in GAP
+#define SAMPLE_DEVICE_NAME          CLIENT_NAME
 #define SPP_SVC_INST_ID             0
 
 
-/// SPP Service
 static const uint16_t spp_service_uuid = 0xABF0;
-/// Characteristic UUID
 #define ESP_GATT_UUID_SPP_DATA_RECEIVE      0xABF1
 #define ESP_GATT_UUID_SPP_DATA_NOTIFY       0xABF2
 #define ESP_GATT_UUID_SPP_COMMAND_RECEIVE   0xABF3
@@ -161,32 +159,26 @@ static const uint8_t char_prop_read_write = ESP_GATT_CHAR_PROP_BIT_WRITE_NR|ESP_
 static const uint8_t char_prop_read_write_notify = ESP_GATT_CHAR_PROP_BIT_READ|ESP_GATT_CHAR_PROP_BIT_WRITE_NR|ESP_GATT_CHAR_PROP_BIT_NOTIFY;
 #endif
 
-///SPP Service - data receive characteristic, read&write without response
 static const uint16_t spp_data_receive_uuid = ESP_GATT_UUID_SPP_DATA_RECEIVE;
 static const uint8_t  spp_data_receive_val[20] = {0x00};
 
-///SPP Service - data notify characteristic, notify&read
 static const uint16_t spp_data_notify_uuid = ESP_GATT_UUID_SPP_DATA_NOTIFY;
 static const uint8_t  spp_data_notify_val[20] = {0x00};
 static const uint8_t  spp_data_notify_ccc[2] = {0x00, 0x00};
 
-///SPP Service - command characteristic, read&write without response
 static const uint16_t spp_command_uuid = ESP_GATT_UUID_SPP_COMMAND_RECEIVE;
 static const uint8_t  spp_command_val[10] = {0x00};
 
-///SPP Service - status characteristic, notify&read
 static const uint16_t spp_status_uuid = ESP_GATT_UUID_SPP_COMMAND_NOTIFY;
 static const uint8_t  spp_status_val[10] = {0x00};
 static const uint8_t  spp_status_ccc[2] = {0x00, 0x00};
 
 #ifdef SUPPORT_HEARTBEAT
-///SPP Server - Heart beat characteristic, notify&write&read
 static const uint16_t spp_heart_beat_uuid = ESP_GATT_UUID_SPP_HEARTBEAT;
 static const uint8_t  spp_heart_beat_val[2] = {0x00, 0x00};
 static const uint8_t  spp_heart_beat_ccc[2] = {0x00, 0x00};
 #endif
 
-///Full HRS Database Description - Used to add attributes into the database
 static const esp_gatts_attr_db_t spp_gatt_db[SPP_IDX_NB] =
 {
     //SPP -  Service Declaration

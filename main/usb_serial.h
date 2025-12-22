@@ -11,8 +11,8 @@
 #define USB_CDC_USE_PRIMARY_CONSOLE 1
 #define USB_CDC_USE_SECONDARY_CONSOLE 0
 #define USB_CDC_INIT_DELAY_MS 100
-#define USB_CDC_TASK_DELAY_MS 10  // Reduced for better real-time response
-#define USB_CDC_BUFFER_SIZE 2048  // Increased for binary protocol
+#define USB_CDC_TASK_DELAY_MS 10
+#define USB_CDC_BUFFER_SIZE 2048
 
 // Binary Protocol Configuration
 #define PACKET_START_BYTE       0xAA
@@ -45,7 +45,6 @@ typedef enum {
     RSP_STREAM_DATA            = 0x90,  // Real-time streaming data
 } packet_command_t;
 
-// Response/Error codes
 typedef enum {
     ERR_OK                     = 0x00,  // Success
     ERR_UNKNOWN_CMD            = 0x01,  // Unknown command
@@ -58,7 +57,6 @@ typedef enum {
     ERR_NOT_SUPPORTED          = 0x08,  // Command not supported on this target
 } error_code_t;
 
-// Packet state machine
 typedef enum {
     STATE_WAIT_START,
     STATE_WAIT_CMD,
@@ -69,7 +67,6 @@ typedef enum {
     STATE_WAIT_CRC_MSB,
 } packet_state_t;
 
-// Packet structure for internal use
 typedef struct {
     uint8_t cmd_id;
     uint16_t payload_length;
@@ -84,21 +81,17 @@ typedef struct {
     uint32_t last_send_ms;
 } stream_config_t;
 
-// Function prototypes
 void usb_serial_init(void);
 void usb_serial_start_task(void);
 void usb_serial_init_esp32s3(void);
 
-// Binary protocol functions
 void usb_serial_process_packet(const binary_packet_t* packet);
 void usb_serial_send_response(uint8_t cmd_id, const uint8_t* payload, uint16_t length);
 void usb_serial_send_ack(uint8_t original_cmd, error_code_t error_code);
 void usb_serial_send_error(error_code_t error_code, const char* message);
 
-// Streaming functions
 void usb_serial_start_streaming(uint16_t rate_hz);
 void usb_serial_stop_streaming(void);
 void usb_serial_send_stream_data(void);
 
-// Utility functions
 uint16_t calculate_crc16(const uint8_t* data, uint16_t length);

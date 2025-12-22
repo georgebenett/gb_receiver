@@ -20,7 +20,6 @@ static const char *TAG = "AUX_OUTPUT";
 static uint8_t aux_output_state = 0;
 
 esp_err_t aux_output_init(void) {
-    // Configure GPIO for aux output
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << AUX_OUTPUT_GPIO),
         .mode = GPIO_MODE_OUTPUT,
@@ -39,7 +38,7 @@ esp_err_t aux_output_init(void) {
     gpio_set_level(AUX_OUTPUT_GPIO, 0);
 
     // Configure PWM for aux output LED
-    // Note: Timer is shared with main LED, so we only configure the channel
+    // Note: Timer is shared with main LED
     ledc_channel_config_t ledc_channel = {
         .gpio_num = AUX_OUTPUT_LED_PIN,
         .speed_mode = LEDC_LOW_SPEED_MODE,
@@ -71,8 +70,6 @@ void aux_output_set(uint8_t state) {
 
     // Update PWM to reflect the new state
     aux_output_update_pwm();
-
-    //ESP_LOGI(TAG, "Aux output set to: %s", state ? "ON" : "OFF");
 }
 
 void aux_output_update_pwm(void) {
@@ -80,14 +77,12 @@ void aux_output_update_pwm(void) {
 
     if (aux_output_state) {
         // When ON, scale throttle value to PWM duty
-        // Scale from throttle range (0-THROTTLE_MAX_VALUE) to PWM duty (0-AUX_LED_PWM_MAX_DUTY)
         duty_scaled = (current_throttle_value * AUX_LED_PWM_MAX_DUTY) / THROTTLE_MAX_VALUE;
     } else {
-        // When OFF, PWM duty is 0
         duty_scaled = 0;
     }
 
-    // Set LEDC duty (already in 0-255 range for 8-bit resolution)
+    // Set LEDC duty
     ledc_set_duty(LEDC_LOW_SPEED_MODE, AUX_LED_PWM_CHANNEL, duty_scaled);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, AUX_LED_PWM_CHANNEL);
 }

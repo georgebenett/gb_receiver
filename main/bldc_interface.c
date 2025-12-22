@@ -31,10 +31,8 @@
 
 static const char *TAG = "BLDC_IF";
 
-// Private variables
 static unsigned char send_buffer[1024];
 
-// Private variables for received data
 static mc_values values;
 static int fw_major;
 static int fw_minor;
@@ -52,14 +50,11 @@ static float dec_adc;
 static float dec_adc_voltage;
 static float dec_chuk;
 
-// Private functions
 void send_packet_no_fwd(unsigned char *data, unsigned int len);
 
-// Function pointers
 static void(*send_func)(unsigned char *data, unsigned int len) = 0;
 static void(*forward_func)(unsigned char *data, unsigned int len) = 0;
 
-// Function pointers for received data
 static void(*rx_value_func)(mc_values *values) = 0;
 static void(*rx_printf_func)(char *str) = 0;
 static void(*rx_fw_func)(int major, int minor) = 0;
@@ -139,7 +134,6 @@ void bldc_interface_process_packet(unsigned char *data, unsigned int len) {
 
 	case COMM_ERASE_NEW_APP:
 	case COMM_WRITE_NEW_APP_DATA:
-		// TODO
 		break;
 
 	case COMM_GET_VALUES:
@@ -192,7 +186,6 @@ void bldc_interface_process_packet(unsigned char *data, unsigned int len) {
 		break;
 
 	case COMM_SAMPLE_PRINT:
-		// TODO
 		break;
 
 	case COMM_ROTOR_POSITION:
@@ -205,7 +198,6 @@ void bldc_interface_process_packet(unsigned char *data, unsigned int len) {
 		break;
 
 	case COMM_EXPERIMENT_SAMPLE:
-		// TODO
 		break;
 
 	case COMM_GET_MCCONF:
@@ -426,19 +418,15 @@ void bldc_interface_process_packet(unsigned char *data, unsigned int len) {
 		break;
 
 	case COMM_DETECT_MOTOR_R_L: {
-		// TODO!
 	} break;
 
 	case COMM_DETECT_MOTOR_FLUX_LINKAGE: {
-		// TODO!
 	} break;
 
 	case COMM_DETECT_ENCODER: {
-		// TODO!
 	} break;
 
 	case COMM_DETECT_HALL_FOC: {
-		// TODO!
 	} break;
 
 	case COMM_GET_DECODED_PPM:
@@ -455,7 +443,6 @@ void bldc_interface_process_packet(unsigned char *data, unsigned int len) {
 		ind = 0;
 		dec_adc = buffer_get_float32(data, 1000000.0, &ind);
 		dec_adc_voltage = buffer_get_float32(data, 1000000.0, &ind);
-		// TODO for adc2
 
 		if (rx_dec_adc_func) {
 			rx_dec_adc_func(dec_adc, dec_adc_voltage);
@@ -516,14 +503,12 @@ void bldc_interface_process_packet(unsigned char *data, unsigned int len) {
 	} break;
 
 	case COMM_SET_MCCONF:
-		// This is a confirmation that the new mcconf is received.
 		if (rx_mcconf_received_func) {
 			rx_mcconf_received_func();
 		}
 		break;
 
 	case COMM_SET_APPCONF:
-		// This is a confirmation that the new appconf is received.
 		if (rx_appconf_received_func) {
 			rx_appconf_received_func();
 		}
@@ -604,7 +589,6 @@ void bldc_interface_set_sim_values_func(void(*func)(void)) {
 	values_requested_func = func;
 }
 
-// Setters
 void bldc_interface_terminal_cmd(char* cmd) {
 	int len = strlen(cmd);
 	send_buffer[0] = COMM_TERMINAL_CMD;
@@ -873,7 +857,6 @@ void bldc_interface_set_appconf(const app_configuration *appconf) {
 	send_packet_no_fwd(send_buffer, ind);
 }
 
-// Getters
 void bldc_interface_get_fw_version(void) {
 	int32_t send_index = 0;
 	send_buffer[send_index++] = COMM_FW_VERSION;
@@ -926,7 +909,6 @@ void bldc_interface_get_decoded_chuk(void) {
 	send_packet_no_fwd(send_buffer, send_index);
 }
 
-// Other functions
 void bldc_interface_detect_motor_param(float current, float min_rpm, float low_duty) {
 	int32_t send_index = 0;
 	send_buffer[send_index++] = COMM_DETECT_MOTOR_PARAM;
@@ -954,7 +936,6 @@ void send_values_to_receiver(mc_values *values) {
 	}
 }
 
-// Helpers
 const char* bldc_interface_fault_to_string(mc_fault_code fault) {
 	switch (fault) {
 	case FAULT_CODE_NONE: return "FAULT_CODE_NONE";
@@ -968,7 +949,6 @@ const char* bldc_interface_fault_to_string(mc_fault_code fault) {
 	}
 }
 
-// Private functions
 void send_packet_no_fwd(unsigned char *data, unsigned int len) {
 	if (!forward_func) {
 		bldc_interface_send_packet(data, len);

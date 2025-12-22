@@ -20,13 +20,11 @@
 
 #include "datatypes.h"
 
-// interface functions
 void bldc_interface_init(void(*func)(unsigned char *data, unsigned int len));
 void bldc_interface_set_forward_func(void(*func)(unsigned char *data, unsigned int len));
 void bldc_interface_send_packet(unsigned char *data, unsigned int len);
 void bldc_interface_process_packet(unsigned char *data, unsigned int len);
 
-// Function pointer setters
 void bldc_interface_set_rx_value_func(void(*func)(mc_values *values));
 void bldc_interface_set_rx_printf_func(void(*func)(char *str));
 void bldc_interface_set_rx_fw_func(void(*func)(int major, int minor));
@@ -45,7 +43,6 @@ void bldc_interface_set_rx_appconf_received_func(void(*func)(void));
 void bldc_interface_set_sim_control_function(void(*func)(motor_control_mode mode, float value));
 void bldc_interface_set_sim_values_func(void(*func)(void));
 
-// Setters
 void bldc_interface_terminal_cmd(char* cmd);
 void bldc_interface_set_duty_cycle(float dutyCycle);
 void bldc_interface_set_current(float current);
@@ -57,7 +54,6 @@ void bldc_interface_set_servo_pos(float pos);
 void bldc_interface_set_mcconf(const mc_configuration *mcconf);
 void bldc_interface_set_appconf(const app_configuration *appconf);
 
-// Getters
 void bldc_interface_get_fw_version(void);
 void bldc_interface_get_values(void);
 void bldc_interface_get_mcconf(void);
@@ -67,13 +63,11 @@ void bldc_interface_get_decoded_ppm(void);
 void bldc_interface_get_decoded_adc(void);
 void bldc_interface_get_decoded_chuk(void);
 
-// Other functions
 void bldc_interface_detect_motor_param(float current, float min_rpm, float low_duty);
 void bldc_interface_reboot(void);
 void bldc_interface_send_alive(void);
 void send_values_to_receiver(mc_values *values);
 
-// Helpers
 const char* bldc_interface_fault_to_string(mc_fault_code fault);
 
 #endif /* BLDC_INTERFACE_H_ */
