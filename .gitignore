@@ -1,7 +1,7 @@
 # Ignore build folders
 build/
 **/build/
-./cache/
+.cache/
 # Ignore .DS_Store files
 .DS_Store
 # Ignore other common things
