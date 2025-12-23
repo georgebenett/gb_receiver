@@ -799,11 +799,9 @@ static void check_vesc_activity(void) {
     }
 }
 
-// CAN RX task (runs in FreeRTOS task)
 void bldc_interface_can_rx_task(void *pvParameters) {
     twai_message_t message;
     uint32_t frame_count = 0;
-    uint32_t no_frame_count = 0;
     uint32_t last_activity_check_ms = 0;
 
     ESP_LOGI(TAG, "CAN RX task started");
@@ -818,7 +816,6 @@ void bldc_interface_can_rx_task(void *pvParameters) {
         }
 
         if (twai_receive(&message, pdMS_TO_TICKS(100)) == ESP_OK) {
-            no_frame_count = 0;  // Reset counter when we receive a frame
             if (message.flags & TWAI_MSG_FLAG_EXTD) {
                 // Extended ID frame
                 frame_count++;
@@ -834,13 +831,6 @@ void bldc_interface_can_rx_task(void *pvParameters) {
             } else {
                 // Standard ID frame (shouldn't happen for VESC, but log it)
                 ESP_LOGD(TAG, "RX: SID=0x%03" PRIX32 " (not extended, ignoring)", message.identifier);
-            }
-        } else {
-            // No frame received
-            no_frame_count++;
-            if (no_frame_count == 100) {  // ~10 seconds with no frames
-                ESP_LOGW(TAG, "No CAN frames received for 10 seconds (total received: %" PRIu32 ")", frame_count);
-                no_frame_count = 0;  // Reset to avoid spam
             }
         }
     }

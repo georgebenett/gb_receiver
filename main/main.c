@@ -48,14 +48,18 @@ static void vesc_task(void *pvParameters) {
         bldc_interface_can_get_values();
 
         // Periodically check if motor config is valid, and retry if not
+        // Only request when BLE is connected to avoid unnecessary requests
         // This ensures config is available even if initial request failed or VESC was not ready
         config_retry_counter++;
         if (config_retry_counter >= CONFIG_RETRY_INTERVAL) {
             config_retry_counter = 0;
-            mc_temp_config_t* config = get_stored_mc_temp_config();
-            if (config == NULL || !config->valid) {
-                ESP_LOGD(TAG, "Motor config invalid, requesting...");
-                bldc_interface_can_get_mcconf_temp();
+            // Only request MC config when BLE is connected
+            if (ble_is_connected()) {
+                mc_temp_config_t* config = get_stored_mc_temp_config();
+                if (config == NULL || !config->valid) {
+                    ESP_LOGD(TAG, "Motor config invalid, requesting...");
+                    bldc_interface_can_get_mcconf_temp();
+                }
             }
         }
 
@@ -123,10 +127,7 @@ void app_main(void) {
     bldc_interface_set_rx_value_func(bldc_values_received);
     bldc_interface_set_rx_mcconf_temp_func(mcconf_temp_received);
 
-    // Request motor config at startup to ensure it's available before clients connect
-    // Give VESC a moment to initialize, then request config
-    vTaskDelay(pdMS_TO_TICKS(500));
-    bldc_interface_can_get_mcconf_temp();
+    // MC config will be requested when BLE connects (see ble.c ESP_GATTS_CONNECT_EVT)
 
     // Start CAN RX task to process incoming CAN frames
     xTaskCreate(bldc_interface_can_rx_task, "can_rx_task", 4096, NULL, 5, NULL);
