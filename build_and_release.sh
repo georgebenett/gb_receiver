@@ -135,11 +135,7 @@ build_target() {
     fi
 
     # Package artifacts
-    if [ -n "$target" ] && [ "$target" != "default" ]; then
-        ZIP_NAME="receiver_${target}_v${VERSION}.zip"
-    else
-        ZIP_NAME="receiver_v${VERSION}.zip"
-    fi
+    ZIP_NAME="receiver_v${VERSION}.zip"
     ZIP_PATH="$ARTIFACTS_DIR/$ZIP_NAME"
 
     print_info "Packaging ${target:-default} artifacts into $ZIP_NAME..."
