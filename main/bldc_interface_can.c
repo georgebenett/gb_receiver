@@ -15,6 +15,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <string.h>
+#include <inttypes.h>
 
 static const char *TAG = "BLDC_CAN";
 
@@ -58,6 +59,15 @@ static bool status_3_received = false;
 static bool status_4_received = false;
 static bool status_5_received = false;
 
+// Multi-frame response buffer (for receiving responses from VESC)
+#define RX_BUFFER_SIZE 512
+static uint8_t rx_buffer[RX_BUFFER_SIZE] = {0};
+static uint16_t rx_buffer_len = 0;
+static uint16_t rx_buffer_expected_len = 0;
+static uint8_t rx_buffer_vesc_id = 0;
+static uint32_t rx_buffer_timeout_ms = 0;
+#define RX_BUFFER_TIMEOUT_MS 1000  // 1 second timeout for incomplete responses
+
 void bldc_interface_can_init(void) {
     // Configure TWAI (CAN) driver
     twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(
@@ -89,6 +99,13 @@ void bldc_interface_can_init(void) {
     num_detected_vescs = 0;
     vesc_detection_logged = false;
     memset(detected_vescs, 0, sizeof(detected_vescs));
+
+    // Reset RX buffer state
+    rx_buffer_len = 0;
+    rx_buffer_expected_len = 0;
+    rx_buffer_vesc_id = 0;
+    rx_buffer_timeout_ms = 0;
+    memset(rx_buffer, 0, sizeof(rx_buffer));
 
     ESP_LOGI(TAG, "CAN interface initialized - auto-detecting VESC ID(s)");
 }
@@ -384,7 +401,13 @@ void bldc_interface_can_get_values(void) {
 }
 
 void bldc_interface_can_get_mcconf_temp(void) {
+    uint8_t vesc_id = get_primary_vesc_id();
+    if (vesc_id == 0) {
+        ESP_LOGW(TAG, "Cannot request MC config: no VESC detected yet");
+        return;
+    }
     uint8_t cmd = COMM_GET_MCCONF_TEMP;
+    ESP_LOGI(TAG, "Requesting MC config from VESC ID=%d", vesc_id);
     bldc_interface_can_send_command(&cmd, 1);
 }
 
@@ -451,7 +474,7 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
 
     processed_count++;
     // Log processed frames at debug level (can be enabled if needed)
-    ESP_LOGD(TAG, "Processing frame: ID=%d cmd=%d len=%d (processed %lu)",
+    ESP_LOGD(TAG, "Processing frame: ID=%d cmd=%d len=%d (processed %" PRIu32 ")",
              controller_id, cmd, len, processed_count);
 
     switch (cmd) {
@@ -524,12 +547,128 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
             break;
         }
 
-        case CAN_PACKET_FILL_RX_BUFFER:
-        case CAN_PACKET_FILL_RX_BUFFER_LONG:
+        case CAN_PACKET_FILL_RX_BUFFER: {
+            // VESC is sending a fragment of a multi-frame response
+            // Format: [offset_low_byte, data...] (up to 7 bytes of data)
+            if (len < 1) {
+                ESP_LOGW(TAG, "FILL_RX_BUFFER too small: len=%d", len);
+                break;
+            }
+
+            // Accept from primary VESC or any detected VESC
+            if (controller_id == get_primary_vesc_id() ||
+                (controller_id != 255 && is_detected_vesc)) {
+
+                uint8_t offset = data[0];
+                uint8_t frag_len = len - 1;
+
+                // Check if this is a new response (offset == 0) or continuation
+                if (offset == 0) {
+                    // New response - reset buffer
+                    rx_buffer_len = 0;
+                    rx_buffer_expected_len = 0;
+                    rx_buffer_vesc_id = controller_id;
+                    rx_buffer_timeout_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+                }
+
+                // Check if buffer is for this VESC
+                if (rx_buffer_vesc_id == controller_id) {
+                    // Copy fragment into buffer
+                    if (offset + frag_len <= RX_BUFFER_SIZE) {
+                        memcpy(rx_buffer + offset, data + 1, frag_len);
+                        if (offset + frag_len > rx_buffer_len) {
+                            rx_buffer_len = offset + frag_len;
+                        }
+                        rx_buffer_timeout_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+                        ESP_LOGD(TAG, "RX buffer fragment: offset=%d len=%d total=%d",
+                                offset, frag_len, rx_buffer_len);
+                    } else {
+                        ESP_LOGW(TAG, "RX buffer overflow: offset=%d len=%d", offset, frag_len);
+                        rx_buffer_len = 0;  // Reset on overflow
+                    }
+                }
+            }
+            break;
+        }
+
+        case CAN_PACKET_FILL_RX_BUFFER_LONG: {
+            // VESC is sending a long fragment (for offsets > 255)
+            // Format: [offset_high_byte, offset_low_byte, data...] (up to 6 bytes of data)
+            if (len < 2) {
+                ESP_LOGW(TAG, "FILL_RX_BUFFER_LONG too small: len=%d", len);
+                break;
+            }
+
+            // Accept from primary VESC or any detected VESC
+            if (controller_id == get_primary_vesc_id() ||
+                (controller_id != 255 && is_detected_vesc)) {
+
+                uint16_t offset = ((uint16_t)data[0] << 8) | data[1];
+                uint8_t frag_len = len - 2;
+
+                // Check if buffer is for this VESC
+                if (rx_buffer_vesc_id == controller_id) {
+                    // Copy fragment into buffer
+                    if (offset + frag_len <= RX_BUFFER_SIZE) {
+                        memcpy(rx_buffer + offset, data + 2, frag_len);
+                        if (offset + frag_len > rx_buffer_len) {
+                            rx_buffer_len = offset + frag_len;
+                        }
+                        rx_buffer_timeout_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+                        ESP_LOGD(TAG, "RX buffer long fragment: offset=%d len=%d total=%d",
+                                offset, frag_len, rx_buffer_len);
+                    } else {
+                        ESP_LOGW(TAG, "RX buffer overflow: offset=%d len=%d", offset, frag_len);
+                        rx_buffer_len = 0;  // Reset on overflow
+                    }
+                }
+            }
+            break;
+        }
+
         case CAN_PACKET_PROCESS_RX_BUFFER: {
-            // These are used for sending commands, not receiving responses
-            // Responses come via CAN_PACKET_PROCESS_SHORT_BUFFER
-            ESP_LOGD(TAG, "Command frame (not response): cmd=%d", cmd);
+            // VESC is indicating the multi-frame response is complete
+            // Format: [sender_id, send_type, len_high, len_low, crc_high, crc_low]
+            if (len < 6) {
+                ESP_LOGW(TAG, "PROCESS_RX_BUFFER too small: len=%d", len);
+                break;
+            }
+
+            // Accept from primary VESC or any detected VESC
+            if (controller_id == get_primary_vesc_id() ||
+                (controller_id != 255 && is_detected_vesc)) {
+
+                // sender_id = data[0];  // Not used
+                // send_type = data[1];  // Not used
+                uint16_t expected_len = ((uint16_t)data[2] << 8) | data[3];
+                uint16_t expected_crc = ((uint16_t)data[4] << 8) | data[5];
+
+                // Check if buffer is for this VESC and has the expected length
+                if (rx_buffer_vesc_id == controller_id && rx_buffer_len >= expected_len) {
+                    // Verify CRC
+                    uint16_t calculated_crc = crc16(rx_buffer, expected_len);
+                    if (calculated_crc == expected_crc) {
+                        ESP_LOGD(TAG, "Multi-frame response complete: len=%d from ID=%d",
+                                expected_len, controller_id);
+
+                        // Process the complete response
+                        bldc_interface_process_packet(rx_buffer, expected_len);
+
+                        // Reset buffer
+                        rx_buffer_len = 0;
+                        rx_buffer_expected_len = 0;
+                        rx_buffer_vesc_id = 0;
+                    } else {
+                        ESP_LOGW(TAG, "CRC mismatch: expected=0x%04X calculated=0x%04X",
+                                expected_crc, calculated_crc);
+                        rx_buffer_len = 0;  // Reset on CRC error
+                    }
+                } else {
+                    ESP_LOGW(TAG, "Buffer mismatch: vesc_id=%d/%d len=%d/%d",
+                            rx_buffer_vesc_id, controller_id, rx_buffer_len, expected_len);
+                    rx_buffer_len = 0;  // Reset on mismatch
+                }
+            }
             break;
         }
 
@@ -624,7 +763,7 @@ static void check_vesc_activity(void) {
         if (detected_vescs[i].active) {
             uint32_t time_since_last_seen = now_ms - detected_vescs[i].last_seen_ms;
             if (time_since_last_seen > VESC_DETECTION_TIMEOUT_MS) {
-                ESP_LOGW(TAG, "VESC ID=%d inactive (no STATUS messages for %lu ms)",
+                ESP_LOGW(TAG, "VESC ID=%d inactive (no STATUS messages for %" PRIu32 " ms)",
                          detected_vescs[i].id, time_since_last_seen);
                 detected_vescs[i].active = false;
 
@@ -643,6 +782,19 @@ static void check_vesc_activity(void) {
                     }
                 }
             }
+        }
+    }
+
+    // Check for RX buffer timeout (incomplete multi-frame response)
+    if (rx_buffer_len > 0 && rx_buffer_timeout_ms > 0) {
+        uint32_t time_since_last_fragment = now_ms - rx_buffer_timeout_ms;
+        if (time_since_last_fragment > RX_BUFFER_TIMEOUT_MS) {
+            ESP_LOGW(TAG, "RX buffer timeout: incomplete response from ID=%d (len=%d, timeout after %" PRIu32 " ms)",
+                     rx_buffer_vesc_id, rx_buffer_len, time_since_last_fragment);
+            rx_buffer_len = 0;
+            rx_buffer_expected_len = 0;
+            rx_buffer_vesc_id = 0;
+            rx_buffer_timeout_ms = 0;
         }
     }
 }
@@ -672,22 +824,22 @@ void bldc_interface_can_rx_task(void *pvParameters) {
                 frame_count++;
                 // Log first frame only, periodic logging moved to DEBUG level
                 if (frame_count == 1) {
-                    ESP_LOGI(TAG, "RX: EID=0x%08lX len=%d (first frame)",
+                    ESP_LOGI(TAG, "RX: EID=0x%08" PRIX32 " len=%d (first frame)",
                              message.identifier, message.data_length_code);
                 } else if (frame_count % 1000 == 0) {
-                    ESP_LOGD(TAG, "RX: EID=0x%08lX len=%d (total frames: %lu)",
+                    ESP_LOGD(TAG, "RX: EID=0x%08" PRIX32 " len=%d (total frames: %" PRIu32 ")",
                              message.identifier, message.data_length_code, frame_count);
                 }
                 bldc_interface_can_process_rx_frame(message.identifier, message.data, message.data_length_code);
             } else {
                 // Standard ID frame (shouldn't happen for VESC, but log it)
-                ESP_LOGD(TAG, "RX: SID=0x%03lX (not extended, ignoring)", message.identifier);
+                ESP_LOGD(TAG, "RX: SID=0x%03" PRIX32 " (not extended, ignoring)", message.identifier);
             }
         } else {
             // No frame received
             no_frame_count++;
             if (no_frame_count == 100) {  // ~10 seconds with no frames
-                ESP_LOGW(TAG, "No CAN frames received for 10 seconds (total received: %lu)", frame_count);
+                ESP_LOGW(TAG, "No CAN frames received for 10 seconds (total received: %" PRIu32 ")", frame_count);
                 no_frame_count = 0;  // Reset to avoid spam
             }
         }

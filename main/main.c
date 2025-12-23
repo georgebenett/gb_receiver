@@ -31,12 +31,12 @@ static void bldc_values_received(mc_values *values) {
 static void mcconf_temp_received(mc_temp_config_t *conf) {
     stored_mc_temp_conf = *conf;
     if (conf && conf->valid) {
-        ESP_LOGI(TAG, "MC temp conf: poles=%u gear=%.3f wheel_diam=%.3f",
+        ESP_LOGI(TAG, "MC temp conf received: poles=%u gear=%.3f wheel_diam=%.3f",
                  conf->motor_poles,
                  conf->gear_ratio,
                  conf->wheel_diameter);
     } else {
-        ESP_LOGW(TAG, "MC temp conf invalid");
+        ESP_LOGW(TAG, "MC temp conf invalid or not received");
     }
 }
 

@@ -13,6 +13,9 @@
 #include "bms.h"
 #include "datatypes.h"
 
+// Accessors provided in main.c
+extern mc_temp_config_t* get_stored_mc_temp_config(void);
+
 #define TAG "USB_SERIAL"
 
 // Binary protocol state machine variables
@@ -367,6 +370,24 @@ static void handle_cmd_get_config(const binary_packet_t* packet) {
     payload[idx++] = throttle_value & 0xFF;
     payload[idx++] = (throttle_value >> 8) & 0xFF;
 
+    // Compact motor configuration (motor poles, gear ratio, wheel diameter)
+    mc_temp_config_t* mc_temp_conf = get_stored_mc_temp_config();
+    uint8_t motor_poles = 0;
+    uint16_t gear_ratio_scaled = 0;
+    uint16_t wheel_diameter_scaled = 0;
+
+    if (mc_temp_conf != NULL && mc_temp_conf->valid) {
+        motor_poles = mc_temp_conf->motor_poles;
+        gear_ratio_scaled = (uint16_t)((mc_temp_conf->gear_ratio * 1000.0f) + 0.5f);
+        wheel_diameter_scaled = (uint16_t)((mc_temp_conf->wheel_diameter * 1000.0f) + 0.5f);
+    }
+
+    payload[idx++] = motor_poles;
+    payload[idx++] = gear_ratio_scaled & 0xFF;
+    payload[idx++] = (gear_ratio_scaled >> 8) & 0xFF;
+    payload[idx++] = wheel_diameter_scaled & 0xFF;
+    payload[idx++] = (wheel_diameter_scaled >> 8) & 0xFF;
+
     usb_serial_send_response(RSP_CONFIG, payload, idx);
 }
 
@@ -542,6 +563,24 @@ void usb_serial_send_stream_data(void) {
             payload[idx++] = 0;
         }
     }
+
+    // Motor configuration (motor poles, gear ratio, wheel diameter)
+    mc_temp_config_t* mc_temp_conf = get_stored_mc_temp_config();
+    uint8_t motor_poles = 0;
+    uint16_t gear_ratio_scaled = 0;
+    uint16_t wheel_diameter_scaled = 0;
+
+    if (mc_temp_conf != NULL && mc_temp_conf->valid) {
+        motor_poles = mc_temp_conf->motor_poles;
+        gear_ratio_scaled = (uint16_t)((mc_temp_conf->gear_ratio * 1000.0f) + 0.5f);
+        wheel_diameter_scaled = (uint16_t)((mc_temp_conf->wheel_diameter * 1000.0f) + 0.5f);
+    }
+
+    payload[idx++] = motor_poles;
+    payload[idx++] = gear_ratio_scaled & 0xFF;
+    payload[idx++] = (gear_ratio_scaled >> 8) & 0xFF;
+    payload[idx++] = wheel_diameter_scaled & 0xFF;
+    payload[idx++] = (wheel_diameter_scaled >> 8) & 0xFF;
 
     usb_serial_send_response(RSP_STREAM_DATA, payload, idx);
 }
