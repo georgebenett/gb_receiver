@@ -71,7 +71,7 @@ void usb_serial_init(void)
     // Add target-specific initialization delay
     vTaskDelay(pdMS_TO_TICKS(USB_CDC_INIT_DELAY_MS));
 
-    usb_serial_init_esp32s3();
+    usb_serial_init_esp32c3();
 
     // Additional delay to ensure USB is fully ready
     vTaskDelay(pdMS_TO_TICKS(500));
@@ -97,9 +97,9 @@ void usb_serial_start_task(void)
     }
 }
 
-void usb_serial_init_esp32s3(void)
+void usb_serial_init_esp32c3(void)
 {
-    ESP_LOGI(TAG, "Setting up USB Serial JTAG interface for ESP32-S3");
+    ESP_LOGI(TAG, "Setting up USB Serial JTAG interface for ESP32-C3");
 
     usb_serial_jtag_driver_config_t usb_serial_jtag_config;
     usb_serial_jtag_config.rx_buffer_size = USB_CDC_BUFFER_SIZE;
