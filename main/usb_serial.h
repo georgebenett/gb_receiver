@@ -6,7 +6,7 @@
 #include "freertos/task.h"
 
 
-// ESP32-S3 specific USB CDC settings
+// ESP32-C3 specific USB CDC settings
 #define USB_CDC_ENABLED 1
 #define USB_CDC_USE_PRIMARY_CONSOLE 1
 #define USB_CDC_USE_SECONDARY_CONSOLE 0
@@ -83,7 +83,7 @@ typedef struct {
 
 void usb_serial_init(void);
 void usb_serial_start_task(void);
-void usb_serial_init_esp32s3(void);
+void usb_serial_init_esp32c3(void);
 
 void usb_serial_process_packet(const binary_packet_t* packet);
 void usb_serial_send_response(uint8_t cmd_id, const uint8_t* payload, uint16_t length);
