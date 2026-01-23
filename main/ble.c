@@ -6,6 +6,7 @@
 
 
 #include <string.h>
+#include <inttypes.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -45,6 +46,9 @@ extern mc_temp_config_t* get_stored_mc_temp_config(void);
 #define SAMPLE_DEVICE_NAME          CLIENT_NAME
 #define SPP_SVC_INST_ID             0
 
+// BLE Security Configuration
+#define BLE_PASSKEY                 483265  // Fixed passkey for pairing
+
 
 static const uint16_t spp_service_uuid = 0xABF0;
 #define ESP_GATT_UUID_SPP_DATA_RECEIVE      0xABF1
@@ -82,6 +86,7 @@ static uint8_t heartbeat_count_num = 0;
 
 static bool enable_data_ntf = false;
 static bool is_connected = false;
+static bool is_authenticated = false;  // Connection is encrypted/authenticated
 
 static esp_bd_addr_t spp_remote_bda = {0x0,};
 
@@ -484,7 +489,7 @@ static void spp_task_init(void)
 static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
 {
     esp_err_t err;
-    ESP_LOGD(GATTS_TABLE_TAG, "GAP_EVT, event %d", event);
+    ESP_LOGI(GATTS_TABLE_TAG, "GAP_EVT, event %d", event);
 
     switch (event) {
     case ESP_GAP_BLE_ADV_DATA_RAW_SET_COMPLETE_EVT:
@@ -496,6 +501,40 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
             ESP_LOGE(GATTS_TABLE_TAG, "Advertising start failed: %s", esp_err_to_name(err));
         }
         break;
+
+    // Security events
+    case ESP_GAP_BLE_SEC_REQ_EVT:
+        ESP_LOGI(GATTS_TABLE_TAG, "ESP_GAP_BLE_SEC_REQ_EVT");
+        // Accept the security request from the client
+        esp_ble_gap_security_rsp(param->ble_security.ble_req.bd_addr, true);
+        break;
+
+    case ESP_GAP_BLE_PASSKEY_NOTIF_EVT:
+        // Server displays passkey (not used since we use fixed passkey)
+        ESP_LOGI(GATTS_TABLE_TAG, "ESP_GAP_BLE_PASSKEY_NOTIF_EVT - passkey: %06" PRIu32,
+                param->ble_security.key_notif.passkey);
+        break;
+
+    case ESP_GAP_BLE_AUTH_CMPL_EVT:
+        if (param->ble_security.auth_cmpl.success) {
+            ESP_LOGI(GATTS_TABLE_TAG, "Authentication SUCCESS, addr_type: %d, auth_mode: %d",
+                    param->ble_security.auth_cmpl.addr_type,
+                    param->ble_security.auth_cmpl.auth_mode);
+            is_authenticated = true;
+        } else {
+            ESP_LOGW(GATTS_TABLE_TAG, "Authentication FAILED, reason: 0x%x",
+                    param->ble_security.auth_cmpl.fail_reason);
+            is_authenticated = false;
+            // Disconnect unauthenticated client
+            esp_ble_gap_disconnect(param->ble_security.auth_cmpl.bd_addr);
+        }
+        break;
+
+    case ESP_GAP_BLE_KEY_EVT:
+        ESP_LOGI(GATTS_TABLE_TAG, "ESP_GAP_BLE_KEY_EVT, key_type: %d",
+                param->ble_security.ble_key.key_type);
+        break;
+
     default:
         break;
     }
@@ -534,6 +573,12 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                     } else if (descr_value == 0x0000) {
                         enable_data_ntf = false;
                     }
+                }
+
+                // SECURITY CHECK: Only accept throttle commands from authenticated connections
+                if (!is_authenticated) {
+                    ESP_LOGW(GATTS_TABLE_TAG, "Rejecting write from unauthenticated client!");
+                    break;
                 }
 
                 uint16_t adc_value = (uint16_t)p_data->write.value[0] |  // Low byte
@@ -588,6 +633,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     	case ESP_GATTS_DISCONNECT_EVT:
             spp_mtu_size = 23;
     	    is_connected = false;
+    	    is_authenticated = false;  // Reset authentication on disconnect
     	    throttle_reset_value();
     	    throttle_stop_timeout_monitor();
     	    enable_data_ntf = false;
@@ -710,6 +756,27 @@ esp_err_t ble_spp_server_start(void)
         ESP_LOGE(GATTS_TABLE_TAG, "Set local MTU failed: %s", esp_err_to_name(ret));
         return ret;
     }
+
+    // Configure BLE Security
+    esp_ble_auth_req_t auth_req = ESP_LE_AUTH_REQ_SC_MITM_BOND;  // Secure Connections, MITM protection, Bonding
+    esp_ble_io_cap_t io_cap = ESP_IO_CAP_OUT;  // Display only (server shows passkey)
+    uint8_t key_size = 16;
+    uint8_t init_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
+    uint8_t rsp_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
+    uint32_t passkey = BLE_PASSKEY;
+    uint8_t auth_option = ESP_BLE_ONLY_ACCEPT_SPECIFIED_AUTH_ENABLE;  // Only accept authenticated connections
+    uint8_t oob_support = ESP_BLE_OOB_DISABLE;
+
+    esp_ble_gap_set_security_param(ESP_BLE_SM_SET_STATIC_PASSKEY, &passkey, sizeof(uint32_t));
+    esp_ble_gap_set_security_param(ESP_BLE_SM_AUTHEN_REQ_MODE, &auth_req, sizeof(uint8_t));
+    esp_ble_gap_set_security_param(ESP_BLE_SM_IOCAP_MODE, &io_cap, sizeof(uint8_t));
+    esp_ble_gap_set_security_param(ESP_BLE_SM_MAX_KEY_SIZE, &key_size, sizeof(uint8_t));
+    esp_ble_gap_set_security_param(ESP_BLE_SM_SET_INIT_KEY, &init_key, sizeof(uint8_t));
+    esp_ble_gap_set_security_param(ESP_BLE_SM_SET_RSP_KEY, &rsp_key, sizeof(uint8_t));
+    esp_ble_gap_set_security_param(ESP_BLE_SM_ONLY_ACCEPT_SPECIFIED_SEC_AUTH, &auth_option, sizeof(uint8_t));
+    esp_ble_gap_set_security_param(ESP_BLE_SM_OOB_SUPPORT, &oob_support, sizeof(uint8_t));
+
+    ESP_LOGI(GATTS_TABLE_TAG, "BLE Security configured with passkey: %06lu", (unsigned long)passkey);
 
     return ESP_OK;
 }
