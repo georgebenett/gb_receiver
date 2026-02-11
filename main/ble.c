@@ -26,6 +26,7 @@
 #include "ble.h"
 #include "esp_gatt_common_api.h"
 #include "throttle.h"
+#include "servo.h"
 #include "ble.h"
 #include "led.h"
 #include "bms.h"
@@ -636,6 +637,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     	    is_authenticated = false;  // Reset authentication on disconnect
     	    throttle_reset_value();
     	    throttle_stop_timeout_monitor();
+    	    servo_set_angle(SERVO_NEUTRAL);  // Stop continuous-rotation servo when BLE not connected
     	    enable_data_ntf = false;
 #ifdef SUPPORT_HEARTBEAT
     	    enable_heart_ntf = false;

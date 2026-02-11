@@ -8,6 +8,8 @@
 #include "hw_config.h"
 #include "led.h"
 #include "aux_output.h"
+#include "servo.h"
+#include "ble.h"
 
 #define THROTTLE_TAG "THROTTLE"
 
@@ -128,6 +130,13 @@ static void send_nunchuck_throttle(void *pvParameters) {
 
         // Send the packet
         bldc_interface_send_packet(buffer, ind);
+
+        // Servo: always drive it; neutral when BLE not connected, else map throttle to angle
+        if (ble_is_connected()) {
+            servo_set_angle_from_throttle((uint16_t)y_value);
+        } else {
+            servo_set_angle(SERVO_NEUTRAL);
+        }
 
         // Delay before next update
         vTaskDelay(pdMS_TO_TICKS(20));  // 5ms delay for smooth ramping

@@ -13,6 +13,7 @@
 #include "bms_interface_uart.h"
 #include "bldc_interface_can.h"
 #include "aux_output.h"
+#include "servo.h"
 #include "usb_serial.h"
 
 static const char *TAG = "MAIN";
@@ -88,6 +89,7 @@ void app_main(void) {
 
     ESP_ERROR_CHECK(led_init());
     ESP_ERROR_CHECK(aux_output_init());
+    ESP_ERROR_CHECK(servo_init());
     ESP_ERROR_CHECK(bms_uart_init());
 
     // Initialize USB serial
