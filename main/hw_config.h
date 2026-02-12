@@ -7,7 +7,7 @@
 // Pin definitions
 #define LED_PIN                   GPIO_NUM_10
 
-#define AUX_OUTPUT_GPIO           GPIO_NUM_1
+#define AUX_OUTPUT_GPIO           GPIO_NUM_8
 #define AUX_OUTPUT_LED_PIN        GPIO_NUM_0
 
 #define BMS_UART_TX_PIN           GPIO_NUM_6

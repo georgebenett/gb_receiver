@@ -35,7 +35,7 @@ esp_err_t aux_output_init(void) {
     }
 
     // Start with output OFF
-    gpio_set_level(AUX_OUTPUT_GPIO, 0);
+    gpio_set_level(AUX_OUTPUT_GPIO, 1);
 
     // Configure PWM for aux output LED
     // Note: Timer is shared with main LED
@@ -65,7 +65,7 @@ esp_err_t aux_output_init(void) {
 }
 
 void aux_output_set(uint8_t state) {
-    aux_output_state = state ? 1 : 0;
+    aux_output_state = state ? 0 : 1;
     gpio_set_level(AUX_OUTPUT_GPIO, aux_output_state);
 
     // Update PWM to reflect the new state
