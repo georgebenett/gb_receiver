@@ -24,8 +24,29 @@ static mc_temp_config_t stored_mc_temp_conf = {0};
 mc_temp_config_t* get_stored_mc_temp_config(void);
 
 static void bldc_values_received(mc_values *values) {
-    stored_values = *values;
-    // VESC data is streamed via USB serial when streaming is enabled
+    // Merge: avoid overwriting valid voltage with 0 from partial STATUS updates.
+    // STATUS 1/2/3/4 don't include v_in, so accumulated_values.v_in stays 0 until
+    // STATUS 5 arrives - full overwrite would cause 0V/25.8V cycling on receiver page.
+    if (values->v_in > 0 || stored_values.v_in == 0) {
+        stored_values.v_in = values->v_in;
+    }
+    stored_values.temp_mos = values->temp_mos;
+    stored_values.temp_motor = values->temp_motor;
+    stored_values.current_motor = values->current_motor;
+    stored_values.current_in = values->current_in;
+    stored_values.id = values->id;
+    stored_values.iq = values->iq;
+    stored_values.rpm = values->rpm;
+    stored_values.duty_now = values->duty_now;
+    stored_values.amp_hours = values->amp_hours;
+    stored_values.amp_hours_charged = values->amp_hours_charged;
+    stored_values.watt_hours = values->watt_hours;
+    stored_values.watt_hours_charged = values->watt_hours_charged;
+    stored_values.tachometer = values->tachometer;
+    stored_values.tachometer_abs = values->tachometer_abs;
+    stored_values.fault_code = values->fault_code;
+    stored_values.pid_pos = values->pid_pos;
+    stored_values.vesc_id = values->vesc_id;
 }
 
 static void mcconf_temp_received(mc_temp_config_t *conf) {

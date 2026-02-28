@@ -748,8 +748,7 @@ static void process_status_5_message(uint8_t id, uint8_t *data, uint8_t len) {
 }
 
 static void update_and_notify_values(void) {
-    // Notify whenever we receive any STATUS message
-    // This allows partial updates to be displayed immediately
+    // Notify whenever we receive any STATUS message for responsive telemetry
     if (rx_value_func && (status_received || status_4_received || status_5_received)) {
         rx_value_func(&accumulated_values);
     }
