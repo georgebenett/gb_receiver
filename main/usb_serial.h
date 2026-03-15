@@ -36,12 +36,16 @@ typedef enum {
     CMD_START_STREAMING        = 0x10,  // Start real-time data streaming
     CMD_STOP_STREAMING         = 0x11,  // Stop real-time data streaming
     CMD_SET_STREAM_RATE        = 0x12,  // Set streaming rate in Hz (payload: uint16)
+    CMD_CHECK_COREDUMP         = 0x16,  // Check if coredump exists in flash
+    CMD_GET_COREDUMP           = 0x17,  // Get coredump data (payload: chunk_offset uint16)
 
     // Response IDs (Device -> Host)
     RSP_ACK                    = 0x80,  // Acknowledge with result code
     RSP_ERROR                  = 0x81,  // Error response
     RSP_FIRMWARE_VERSION       = 0x82,  // Firmware version data
     RSP_CONFIG                 = 0x83,  // Configuration data
+    RSP_COREDUMP_INFO         = 0x86,  // Coredump info (exists flag, size)
+    RSP_COREDUMP_CHUNK         = 0x87,  // Coredump data chunk
     RSP_STREAM_DATA            = 0x90,  // Real-time streaming data
 } packet_command_t;
 
@@ -55,6 +59,8 @@ typedef enum {
     ERR_NOT_CALIBRATED         = 0x06,  // Device not calibrated
     ERR_OUT_OF_RANGE           = 0x07,  // Parameter out of range
     ERR_NOT_SUPPORTED          = 0x08,  // Command not supported on this target
+    ERR_NO_COREDUMP            = 0x09,  // No coredump available
+    ERR_READ_FAILED            = 0x0A,  // Failed to read data
 } error_code_t;
 
 typedef enum {

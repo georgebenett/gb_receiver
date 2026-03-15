@@ -2,6 +2,7 @@
 
 #include "bms.h"
 #include "string.h"
+#include "stdbool.h"
 #include "esp_log.h"
 #include "hw_config.h"
 
@@ -24,6 +25,30 @@ static void calculate_checksum(const uint8_t *data, size_t len, uint8_t *chk_hig
 // Forward declarations of static functions
 static void bms_read_task(void *pvParameters);
 static void print_bms_values(uint8_t *data, size_t len);
+static esp_err_t send_command(uint8_t status, uint8_t cmd, const uint8_t *data, size_t data_len, uint8_t *response, size_t *response_len);
+
+/** Return true if the buffer looks like a valid BMS frame (0xDD ... 0x77, min length, checksum). */
+static bool is_valid_bms_response(const uint8_t *data, size_t len) {
+    if (data == NULL || len < 6) return false;
+    if (data[0] != START_BYTE || data[len - 1] != STOP_BYTE) return false;
+    uint8_t data_len = data[3];
+    if (len < (size_t)(4 + data_len + 3)) return false;  // status, cmd, len, payload, chk_hi, chk_lo, stop
+    uint16_t sum = 0;
+    for (size_t i = 2; i < 4 + (size_t)data_len; i++) sum += data[i];
+    uint16_t expected = ~sum + 1;
+    uint16_t got = (data[len - 2] << 8) | data[len - 1];
+    return (expected == got);
+}
+
+/** Try one pin assignment: set pins, flush, send basic info, return true if valid response. */
+static bool try_pin_assignment(gpio_num_t tx_pin, gpio_num_t rx_pin, uint8_t *response, size_t *response_len) {
+    uart_set_pin(BMS_UART_PORT, tx_pin, rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    uart_flush(BMS_UART_PORT);
+    vTaskDelay(pdMS_TO_TICKS(50));  // let line settle
+    esp_err_t err = send_command(0xA5, 0x03, NULL, 0, response, response_len);
+    if (err != ESP_OK || *response_len == 0) return false;
+    return is_valid_bms_response(response, *response_len);
+}
 
 esp_err_t bms_uart_init(void) {
     uart_config_t uart_config = {
@@ -36,10 +61,20 @@ esp_err_t bms_uart_init(void) {
     };
 
     ESP_ERROR_CHECK(uart_param_config(BMS_UART_PORT, &uart_config));
-    ESP_ERROR_CHECK(uart_set_pin(BMS_UART_PORT, BMS_UART_TX_PIN, BMS_UART_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+    ESP_ERROR_CHECK(uart_set_pin(BMS_UART_PORT, BMS_UART_PIN_A, BMS_UART_PIN_B, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
     ESP_ERROR_CHECK(uart_driver_install(BMS_UART_PORT, BMS_BUF_SIZE * 2, 0, 0, NULL, 0));
 
-    // Create task to read and print BMS values
+    uint8_t probe[256];
+    size_t probe_len = 0;
+
+    if (try_pin_assignment(BMS_UART_PIN_A, BMS_UART_PIN_B, probe, &probe_len)) {
+        ESP_LOGI(TAG, "BMS UART pins detected: TX=GPIO%d, RX=GPIO%d", BMS_UART_PIN_A, BMS_UART_PIN_B);
+    } else if (try_pin_assignment(BMS_UART_PIN_B, BMS_UART_PIN_A, probe, &probe_len)) {
+        ESP_LOGI(TAG, "BMS UART pins detected: TX=GPIO%d, RX=GPIO%d", BMS_UART_PIN_B, BMS_UART_PIN_A);
+    } else {
+        ESP_LOGW(TAG, "BMS UART pin auto-detect: no valid response on either assignment (TX/RX may be swapped or BMS disconnected)");
+    }
+
     xTaskCreate(bms_read_task, "bms_read_task", 4096, NULL, 5, NULL);
 
     ESP_LOGI(TAG, "BMS UART initialized");

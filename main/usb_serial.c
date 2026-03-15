@@ -2,7 +2,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <inttypes.h>
 #include "esp_log.h"
+#include "esp_partition.h"
 #include "driver/usb_serial_jtag.h"
 #include "ble.h"
 #include "throttle.h"
@@ -40,6 +42,8 @@ static void handle_cmd_get_config(const binary_packet_t* packet);
 static void handle_cmd_start_streaming(const binary_packet_t* packet);
 static void handle_cmd_stop_streaming(const binary_packet_t* packet);
 static void handle_cmd_set_stream_rate(const binary_packet_t* packet);
+static void handle_cmd_check_coredump(const binary_packet_t* packet);
+static void handle_cmd_get_coredump(const binary_packet_t* packet);
 
 // CRC-16-CCITT calculation (polynomial: 0x1021)
 uint16_t calculate_crc16(const uint8_t* data, uint16_t length) {
@@ -306,6 +310,12 @@ void usb_serial_process_packet(const binary_packet_t* packet) {
             break;
         case CMD_SET_STREAM_RATE:
             handle_cmd_set_stream_rate(packet);
+            break;
+        case CMD_CHECK_COREDUMP:
+            handle_cmd_check_coredump(packet);
+            break;
+        case CMD_GET_COREDUMP:
+            handle_cmd_get_coredump(packet);
             break;
         default:
             ESP_LOGW(TAG, "Unknown command: 0x%02X", packet->cmd_id);
@@ -583,4 +593,106 @@ void usb_serial_send_stream_data(void) {
     payload[idx++] = (wheel_diameter_scaled >> 8) & 0xFF;
 
     usb_serial_send_response(RSP_STREAM_DATA, payload, idx);
+}
+
+// ========== COREDUMP HANDLERS ==========
+
+static void handle_cmd_check_coredump(const binary_packet_t *packet) {
+    (void)packet;
+    const esp_partition_t *part = esp_partition_find_first(
+            ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_COREDUMP, "coredump");
+
+    if (part == NULL) {
+        ESP_LOGW(TAG, "Coredump partition not found");
+        usb_serial_send_ack(CMD_CHECK_COREDUMP, ERR_NO_COREDUMP);
+        return;
+    }
+
+    uint8_t check_buf[256];
+    esp_err_t err = esp_partition_read(part, 0, check_buf, sizeof(check_buf));
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to read coredump partition: %s", esp_err_to_name(err));
+        usb_serial_send_ack(CMD_CHECK_COREDUMP, ERR_READ_FAILED);
+        return;
+    }
+
+    bool is_empty = true;
+    for (int i = 0; i < (int)sizeof(check_buf); i++) {
+        if (check_buf[i] != 0xFF) {
+            is_empty = false;
+            break;
+        }
+    }
+
+    bool has_coredump = false;
+    uint32_t reported_size = 0;
+
+    if (!is_empty) {
+        bool found_elf = false;
+        for (int off = 0; off < (int)sizeof(check_buf) - 4; off++) {
+            if (check_buf[off] == 0x7F && check_buf[off + 1] == 'E' &&
+                check_buf[off + 2] == 'L' && check_buf[off + 3] == 'F') {
+                found_elf = true;
+                break;
+            }
+        }
+        if (found_elf) {
+            has_coredump = true;
+            reported_size = part->size;
+        }
+    }
+
+    uint8_t payload[3 + 16];
+    uint16_t idx = 0;
+    payload[idx++] = has_coredump ? 1 : 0;
+    payload[idx++] = (reported_size >> 0) & 0xFF;
+    payload[idx++] = (reported_size >> 8) & 0xFF;
+    for (int i = 0; i < 16; i++) {
+        payload[idx++] = check_buf[i];
+    }
+    usb_serial_send_response(RSP_COREDUMP_INFO, payload, idx);
+}
+
+static void handle_cmd_get_coredump(const binary_packet_t *packet) {
+    if (packet->payload_length != 2) {
+        usb_serial_send_ack(CMD_GET_COREDUMP, ERR_INVALID_PAYLOAD);
+        return;
+    }
+
+    uint16_t chunk_offset = packet->payload[0] | (packet->payload[1] << 8);
+
+    const esp_partition_t *part = esp_partition_find_first(
+            ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_COREDUMP, "coredump");
+
+    if (part == NULL) {
+        ESP_LOGW(TAG, "Coredump partition not found");
+        usb_serial_send_ack(CMD_GET_COREDUMP, ERR_NO_COREDUMP);
+        return;
+    }
+
+    if (chunk_offset >= part->size) {
+        ESP_LOGW(TAG, "Chunk offset out of range: %" PRIu16 " >= %" PRIu32, chunk_offset, (uint32_t)part->size);
+        usb_serial_send_ack(CMD_GET_COREDUMP, ERR_OUT_OF_RANGE);
+        return;
+    }
+
+    uint16_t max_chunk = PACKET_MAX_PAYLOAD_SIZE - 4;
+    uint32_t remaining = part->size - chunk_offset;
+    uint16_t chunk_size = (remaining < max_chunk) ? (uint16_t)remaining : max_chunk;
+
+    uint8_t payload[PACKET_MAX_PAYLOAD_SIZE];
+    uint16_t idx = 0;
+    payload[idx++] = (chunk_offset >> 0) & 0xFF;
+    payload[idx++] = (chunk_offset >> 8) & 0xFF;
+    payload[idx++] = (chunk_size >> 0) & 0xFF;
+    payload[idx++] = (chunk_size >> 8) & 0xFF;
+
+    esp_err_t read_err = esp_partition_read(part, chunk_offset, &payload[idx], chunk_size);
+    if (read_err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to read coredump chunk at offset %" PRIu16 ": %s", chunk_offset, esp_err_to_name(read_err));
+        usb_serial_send_ack(CMD_GET_COREDUMP, ERR_READ_FAILED);
+        return;
+    }
+    idx += chunk_size;
+    usb_serial_send_response(RSP_COREDUMP_CHUNK, payload, idx);
 }
