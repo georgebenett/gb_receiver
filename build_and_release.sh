@@ -144,9 +144,13 @@ build_target() {
     STAGING_DIR=$(mktemp -d)
 
     # Copy and rename files to staging directory with correct names
+    # Include .elf for coredump decoding (must match flashed binary to avoid SHA mismatch)
     cp "$APP_BIN" "$STAGING_DIR/gb_receiver.bin"
     cp "build/bootloader/bootloader.bin" "$STAGING_DIR/bootloader.bin"
     cp "build/partition_table/partition-table.bin" "$STAGING_DIR/partition-table.bin"
+    if [ -f "build/gb_receiver.elf" ]; then
+        cp "build/gb_receiver.elf" "$STAGING_DIR/gb_receiver.elf"
+    fi
 
     # Create zip from staging directory (files will be at root level)
     cd "$STAGING_DIR"
@@ -154,6 +158,9 @@ build_target() {
         gb_receiver.bin \
         bootloader.bin \
         partition-table.bin
+    if [ -f "gb_receiver.elf" ]; then
+        zip -q "$ZIP_PATH" gb_receiver.elf
+    fi
     cd - > /dev/null
 
     # Clean up staging directory
@@ -262,7 +269,8 @@ ${ARTIFACT_LIST}
 Each zip contains:
 - \`gb_receiver.bin\` - Application binary
 - \`bootloader.bin\` - Bootloader binary
-- \`partition-table.bin\` - Partition table" \
+- \`partition-table.bin\` - Partition table
+- \`gb_receiver.elf\` - Application ELF (for coredump decoding)" \
         "$ARTIFACTS_DIR"/*.zip
 fi
 
