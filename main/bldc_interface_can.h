@@ -72,6 +72,10 @@ void bldc_interface_can_rx_task(void *pvParameters);
 uint8_t bldc_interface_can_get_primary_vesc_id(void);  // Returns 0 if no VESC detected
 uint8_t bldc_interface_can_get_detected_vesc_count(void);
 
+// CAN bus fault status (set after CAN_TX_FAULT_THRESHOLD consecutive transmit failures)
+bool bldc_interface_can_has_fault(void);
+void bldc_interface_can_clear_fault(void);
+
 // Internal: Process received CAN frame (called from CAN RX handler)
 void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t len);
 

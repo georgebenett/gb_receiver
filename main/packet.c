@@ -43,11 +43,17 @@ static PACKET_STATE_t handler_states[PACKET_HANDLERS];
 
 void packet_init(void (*s_func)(unsigned char *data, unsigned int len),
 		void (*p_func)(unsigned char *data, unsigned int len), int handler_num) {
+	if (handler_num < 0 || handler_num >= PACKET_HANDLERS) {
+		return;
+	}
 	handler_states[handler_num].send_func = s_func;
 	handler_states[handler_num].process_func = p_func;
 }
 
 void packet_send_packet(unsigned char *data, unsigned int len, int handler_num) {
+	if (handler_num < 0 || handler_num >= PACKET_HANDLERS) {
+		return;
+	}
 	if (len > PACKET_MAX_PL_LEN) {
 		return;
 	}
@@ -91,6 +97,9 @@ void packet_timerfunc(void) {
 }
 
 void packet_process_byte(uint8_t rx_data, int handler_num) {
+	if (handler_num < 0 || handler_num >= PACKET_HANDLERS) {
+		return;
+	}
 	switch (handler_states[handler_num].rx_state) {
 	case 0:
 		if (rx_data == 2) {
@@ -128,6 +137,10 @@ void packet_process_byte(uint8_t rx_data, int handler_num) {
 		break;
 
 	case 3:
+		if (handler_states[handler_num].rx_data_ptr >= handler_states[handler_num].payload_length) {
+			handler_states[handler_num].rx_state = 0;
+			break;
+		}
 		handler_states[handler_num].rx_buffer[handler_states[handler_num].rx_data_ptr++] = rx_data;
 		if (handler_states[handler_num].rx_data_ptr == handler_states[handler_num].payload_length) {
 			handler_states[handler_num].rx_state++;
