@@ -8,6 +8,9 @@
 
 static const char *TAG = "LED";
 static uint8_t current_duty = 0;
+
+void led_transition_task(void *pvParameters);
+static volatile uint8_t pending_target_duty = 0;
 static TaskHandle_t transition_task_handle = NULL;
 
 esp_err_t led_init(void)
@@ -34,6 +37,14 @@ esp_err_t led_init(void)
     };
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
 
+    // Create the persistent transition task (starts suspended, waiting for notifications)
+    xTaskCreate(led_transition_task,
+                "led_transition",
+                2048,
+                NULL,
+                1,
+                &transition_task_handle);
+
     // Set initial state (disconnected)
     led_set_connection_state(false);
 
@@ -49,44 +60,43 @@ void led_set_duty(uint8_t duty)
     current_duty = duty;
 }
 
-static void led_transition_task(void *pvParameters)
+void led_transition_task(void *pvParameters)
 {
-    uint8_t target_duty = (uint8_t)((uint32_t)pvParameters);
-    float start_duty = current_duty;
-    float duty_diff = target_duty - start_duty;
+    while (1) {
+        // Block indefinitely until a new target is signalled
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-    for (int i = 0; i < LED_TRANSITION_STEPS; i++) {
-        // Use sine curve for smoother transition
-        float progress = (float)i / (LED_TRANSITION_STEPS - 1);
-        float smooth_progress = (1 - cosf(progress * M_PI)) / 2;
-        uint8_t new_duty = start_duty + (duty_diff * smooth_progress);
-        
-        led_set_duty(new_duty);
-        vTaskDelay(pdMS_TO_TICKS(LED_TRANSITION_STEP_MS));
+        uint8_t target_duty = pending_target_duty;
+        float start_duty = current_duty;
+        float duty_diff = (float)target_duty - start_duty;
+
+        for (int i = 0; i < LED_TRANSITION_STEPS; i++) {
+            // If a new target arrived mid-transition, restart from current position
+            if (ulTaskNotifyTake(pdTRUE, 0)) {
+                target_duty = pending_target_duty;
+                start_duty = current_duty;
+                duty_diff = (float)target_duty - start_duty;
+                i = 0;
+            }
+
+            float progress = (float)i / (LED_TRANSITION_STEPS - 1);
+            float smooth_progress = (1.0f - cosf(progress * M_PI)) / 2.0f;
+            uint8_t new_duty = (uint8_t)(start_duty + (duty_diff * smooth_progress));
+
+            led_set_duty(new_duty);
+            vTaskDelay(pdMS_TO_TICKS(LED_TRANSITION_STEP_MS));
+        }
+
+        // Ensure we reach exactly the target value
+        led_set_duty(target_duty);
     }
-    
-    // Ensure we reach exactly the target value
-    led_set_duty(target_duty);
-    
-    transition_task_handle = NULL;
-    vTaskDelete(NULL);
 }
 
 void led_set_connection_state(bool connected)
 {
-    uint8_t target_duty = connected ? LED_PWM_CONNECTED : LED_PWM_DISCONNECTED;
-    
-    // If a transition is already running, stop it
-    if (transition_task_handle != NULL) {
-        vTaskDelete(transition_task_handle);
-        transition_task_handle = NULL;
-    }
+    pending_target_duty = connected ? LED_PWM_CONNECTED : LED_PWM_DISCONNECTED;
 
-    // Create new transition task
-    xTaskCreate(led_transition_task,
-                "led_transition",
-                2048,
-                (void*)((uint32_t)target_duty),
-                1,
-                &transition_task_handle);
-} 
+    if (transition_task_handle != NULL) {
+        xTaskNotifyGive(transition_task_handle);
+    }
+}
