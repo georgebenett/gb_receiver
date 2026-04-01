@@ -50,6 +50,14 @@ enum{
     SPP_IDX_NB,
 };
 
+// Paired remote NVS keys (receiver stores the last connected remote's MAC)
+#define BLE_PAIRED_REMOTE_NVS_NAMESPACE "ble_paired"
+#define BLE_PAIRED_REMOTE_NVS_KEY_MAC   "remote_mac"
+#define BLE_PAIRED_REMOTE_NVS_KEY_VALID "mac_valid"
+
+// How long to prefer the previously paired remote on boot before opening to all
+#define BLE_PREFER_PAIRED_MS 15000  // 15 seconds
+
 // Initialize the BLE SPP server
 esp_err_t ble_spp_server_init(void);
 

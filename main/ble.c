@@ -90,6 +90,12 @@ static bool is_authenticated = false;  // Connection is encrypted/authenticated
 
 static esp_bd_addr_t spp_remote_bda = {0x0,};
 
+// Paired remote management (receiver prefers its last-connected remote on boot)
+static esp_bd_addr_t paired_remote_mac = {0};
+static bool has_paired_remote = false;
+static TimerHandle_t prefer_paired_timer = NULL;
+static TaskHandle_t prefer_paired_task_handle = NULL;
+
 static uint16_t spp_handle_table[SPP_IDX_NB];
 
 static esp_ble_adv_params_t spp_adv_params = {
@@ -412,6 +418,99 @@ void uart_task(void *pvParameters)
     vTaskDelete(NULL);
 }
 
+// --- Paired remote NVS helpers ---
+
+static void ble_paired_remote_load_mac(void)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open(BLE_PAIRED_REMOTE_NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
+    if (err == ESP_OK) {
+        uint8_t valid = 0;
+        if (nvs_get_u8(nvs_handle, BLE_PAIRED_REMOTE_NVS_KEY_VALID, &valid) == ESP_OK && valid == 1) {
+            size_t mac_len = sizeof(esp_bd_addr_t);
+            if (nvs_get_blob(nvs_handle, BLE_PAIRED_REMOTE_NVS_KEY_MAC, paired_remote_mac, &mac_len) == ESP_OK) {
+                has_paired_remote = true;
+                ESP_LOGI(GATTS_TABLE_TAG, "Loaded paired remote MAC: %02x:%02x:%02x:%02x:%02x:%02x",
+                         paired_remote_mac[0], paired_remote_mac[1], paired_remote_mac[2],
+                         paired_remote_mac[3], paired_remote_mac[4], paired_remote_mac[5]);
+            }
+        }
+        nvs_close(nvs_handle);
+    }
+}
+
+static void ble_paired_remote_save_mac(esp_bd_addr_t mac)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open(BLE_PAIRED_REMOTE_NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(GATTS_TABLE_TAG, "Failed to open NVS for paired remote MAC: %s", esp_err_to_name(err));
+        return;
+    }
+    err = nvs_set_blob(nvs_handle, BLE_PAIRED_REMOTE_NVS_KEY_MAC, mac, sizeof(esp_bd_addr_t));
+    if (err == ESP_OK) {
+        uint8_t valid = 1;
+        err = nvs_set_u8(nvs_handle, BLE_PAIRED_REMOTE_NVS_KEY_VALID, valid);
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(nvs_handle);
+    }
+    if (err == ESP_OK) {
+        memcpy(paired_remote_mac, mac, sizeof(esp_bd_addr_t));
+        has_paired_remote = true;
+        ESP_LOGI(GATTS_TABLE_TAG, "Saved paired remote MAC: %02x:%02x:%02x:%02x:%02x:%02x",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    }
+    nvs_close(nvs_handle);
+}
+
+// --- Prefer-paired advertising window ---
+
+static void open_advertising_to_all(void)
+{
+    spp_adv_params.adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY;
+    esp_ble_gap_stop_advertising();  // Restart advertising with new filter policy
+    esp_ble_gap_start_advertising(&spp_adv_params);
+    ESP_LOGI(GATTS_TABLE_TAG, "Prefer-paired window expired: advertising open to all remotes");
+}
+
+static void prefer_paired_task(void *pvParameters)
+{
+    while (1) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (!is_connected) {
+            open_advertising_to_all();
+        }
+    }
+}
+
+static void prefer_paired_timer_cb(TimerHandle_t xTimer)
+{
+    if (prefer_paired_task_handle != NULL) {
+        xTaskNotifyGive(prefer_paired_task_handle);
+    }
+}
+
+static void start_prefer_paired_window(void)
+{
+    if (prefer_paired_timer == NULL) {
+        prefer_paired_timer = xTimerCreate("prefer_paired", pdMS_TO_TICKS(BLE_PREFER_PAIRED_MS),
+                                           pdFALSE, NULL, prefer_paired_timer_cb);
+    }
+    if (prefer_paired_timer != NULL) {
+        xTimerStart(prefer_paired_timer, 0);
+        ESP_LOGI(GATTS_TABLE_TAG, "Prefer-paired window started (%d s): only paired remote can connect",
+                 BLE_PREFER_PAIRED_MS / 1000);
+    }
+}
+
+static void stop_prefer_paired_window(void)
+{
+    if (prefer_paired_timer != NULL) {
+        xTimerStop(prefer_paired_timer, 0);
+    }
+}
+
 static void spp_uart_init(void)
 {
     uart_config_t uart_config = {
@@ -494,6 +593,10 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
     switch (event) {
     case ESP_GAP_BLE_ADV_DATA_RAW_SET_COMPLETE_EVT:
         esp_ble_gap_start_advertising(&spp_adv_params);
+        // Start prefer-paired window on first boot advertising if we have a known remote
+        if (has_paired_remote) {
+            start_prefer_paired_window();
+        }
         break;
     case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
         //advertising start complete event to indicate advertising start successfully or failed
@@ -550,6 +653,16 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     	case ESP_GATTS_REG_EVT:
     	    ESP_LOGI(GATTS_TABLE_TAG, "%s %d", __func__, __LINE__);
         	esp_ble_gap_set_device_name(SAMPLE_DEVICE_NAME);
+
+        	// Load paired remote MAC and set up whitelist-based prefer window
+        	ble_paired_remote_load_mac();
+        	if (has_paired_remote) {
+        	    esp_ble_gap_update_whitelist(true, paired_remote_mac, BLE_WL_ADDR_TYPE_PUBLIC);
+        	    spp_adv_params.adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_WLST;
+        	    ESP_LOGI(GATTS_TABLE_TAG, "Whitelist set to paired remote, starting prefer window");
+        	} else {
+        	    spp_adv_params.adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY;
+        	}
 
         	ESP_LOGI(GATTS_TABLE_TAG, "%s %d", __func__, __LINE__);
         	esp_ble_gap_config_adv_data_raw((uint8_t *)spp_adv_data, sizeof(spp_adv_data));
@@ -623,6 +736,13 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     	    throttle_start_timeout_monitor();
             bldc_interface_get_mcconf_temp(); // Fetch compact motor config for BLE telemetry
     	    memcpy(&spp_remote_bda,&p_data->connect.remote_bda,sizeof(esp_bd_addr_t));
+    	    // Stop prefer-paired window — connection established
+    	    stop_prefer_paired_window();
+    	    // Save remote MAC if new or different
+    	    if (!has_paired_remote ||
+    	        memcmp(paired_remote_mac, p_data->connect.remote_bda, sizeof(esp_bd_addr_t)) != 0) {
+    	        ble_paired_remote_save_mac(p_data->connect.remote_bda);
+    	    }
 #ifdef SUPPORT_HEARTBEAT
     	    uint16_t cmd = 0;
             xQueueSend(cmd_heartbeat_queue,&cmd,10/portTICK_PERIOD_MS);
@@ -641,6 +761,11 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     	    enable_heart_ntf = false;
     	    heartbeat_count_num = 0;
 #endif
+    	    // Re-enter prefer-paired window on disconnect if we have a known remote
+    	    if (has_paired_remote) {
+    	        spp_adv_params.adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_WLST;
+    	        start_prefer_paired_window();
+    	    }
     	    esp_ble_gap_start_advertising(&spp_adv_params);
     	    break;
     	case ESP_GATTS_OPEN_EVT:
@@ -746,6 +871,9 @@ esp_err_t ble_spp_server_start(void)
     esp_ble_gatts_register_callback(gatts_event_handler);
     esp_ble_gap_register_callback(gap_event_handler);
     esp_ble_gatts_app_register(ESP_SPP_APP_ID);
+
+    // Create task to handle prefer-paired timer expiry (avoids BLE API calls from timer context)
+    xTaskCreate(prefer_paired_task, "prefer_paired", 2048, NULL, 5, &prefer_paired_task_handle);
 
     // Initialize SPP tasks
     spp_task_init();
