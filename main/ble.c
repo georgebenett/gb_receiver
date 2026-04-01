@@ -919,8 +919,8 @@ static void send_telemetry_task(void *pvParameters) {
             mc_values* vesc_values = get_stored_vesc_values();
             bms_values_t* bms_values = get_stored_bms_values();
 
-            // Combined buffer for VESC (14 bytes) + BMS data (41 bytes) + compact mcconf temp (5 bytes) = 60 bytes
-            uint8_t buffer[60];
+            // Combined buffer for VESC (14 bytes) + BMS data (41 bytes) + compact mcconf temp (5 bytes) + aux state (1 byte) = 61 bytes
+            uint8_t buffer[61];
             int idx = 0;
 
             // Pack VESC data
@@ -1005,6 +1005,9 @@ static void send_telemetry_task(void *pvParameters) {
             buffer[idx++] = (gear_ratio_scaled >> 8) & 0xFF;
             buffer[idx++] = wheel_diameter_scaled & 0xFF;
             buffer[idx++] = (wheel_diameter_scaled >> 8) & 0xFF;
+
+            // Pack aux output state (byte 60)
+            buffer[idx++] = aux_output_get_state();
 
             // Send notification
             esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id,

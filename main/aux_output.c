@@ -3,6 +3,7 @@
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "esp_log.h"
+#include "nvs_flash.h"
 #include "throttle.h"
 
 static const char *TAG = "AUX_OUTPUT";
@@ -17,7 +18,33 @@ static const char *TAG = "AUX_OUTPUT";
 #define AUX_LED_PWM_MAX_DUTY     50         // Maximum PWM duty value (out of 255)
 #define THROTTLE_MAX_VALUE       255         // Maximum throttle value from BLE
 
+// NVS storage for aux output state
+#define AUX_NVS_NAMESPACE  "aux_cfg"
+#define AUX_NVS_KEY_STATE  "aux_state"
+
 static uint8_t aux_output_state = 0;
+
+static void aux_output_save_state(void) {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(AUX_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err == ESP_OK) {
+        nvs_set_u8(handle, AUX_NVS_KEY_STATE, aux_output_state);
+        nvs_commit(handle);
+        nvs_close(handle);
+    }
+}
+
+static void aux_output_load_state(void) {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(AUX_NVS_NAMESPACE, NVS_READONLY, &handle);
+    if (err == ESP_OK) {
+        uint8_t state = 0;
+        if (nvs_get_u8(handle, AUX_NVS_KEY_STATE, &state) == ESP_OK) {
+            aux_output_state = state;
+        }
+        nvs_close(handle);
+    }
+}
 
 esp_err_t aux_output_init(void) {
     gpio_config_t io_conf = {
@@ -34,8 +61,9 @@ esp_err_t aux_output_init(void) {
         return ret;
     }
 
-    // Start with output OFF
-    gpio_set_level(AUX_OUTPUT_GPIO, 0);
+    // Restore saved state
+    aux_output_load_state();
+    gpio_set_level(AUX_OUTPUT_GPIO, aux_output_state);
 
     // Configure PWM for aux output LED
     // Note: Timer is shared with main LED
@@ -67,9 +95,14 @@ esp_err_t aux_output_init(void) {
 void aux_output_set(uint8_t state) {
     aux_output_state = state ? 1 : 0;
     gpio_set_level(AUX_OUTPUT_GPIO, aux_output_state);
+    aux_output_save_state();
 
     // Update PWM to reflect the new state
     aux_output_update_pwm();
+}
+
+uint8_t aux_output_get_state(void) {
+    return aux_output_state;
 }
 
 void aux_output_update_pwm(void) {
