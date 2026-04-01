@@ -37,7 +37,8 @@ typedef struct {
 } detected_vesc_t;
 
 static detected_vesc_t detected_vescs[MAX_DETECTED_VESCS] = {0};
-static uint8_t primary_vesc_id = 0;  // 0 = not detected yet
+static uint8_t primary_vesc_id = 0;
+static bool primary_vesc_detected = false;
 static uint8_t num_detected_vescs = 0;
 static bool vesc_detection_logged = false;
 
@@ -138,6 +139,7 @@ void bldc_interface_can_init(void) {
 
     // Reset detection state
     primary_vesc_id = 0;
+    primary_vesc_detected = false;
     num_detected_vescs = 0;
     vesc_detection_logged = false;
     memset(detected_vescs, 0, sizeof(detected_vescs));
@@ -227,11 +229,12 @@ static esp_err_t can_transmit_eid(uint32_t eid, const uint8_t *data, uint8_t len
 
 // Get primary VESC ID (first detected, or 0 if none detected)
 static uint8_t get_primary_vesc_id(void) {
-    if (primary_vesc_id == 0) {
+    if (!primary_vesc_detected) {
         // Check if any VESC is detected
         for (int i = 0; i < num_detected_vescs; i++) {
             if (detected_vescs[i].active) {
                 primary_vesc_id = detected_vescs[i].id;
+                primary_vesc_detected = true;
                 break;
             }
         }
@@ -280,8 +283,9 @@ static void detect_vesc_id(uint8_t id) {
         detected_vescs[num_detected_vescs].active = true;
 
         // Set as primary if it's the first one
-        if (primary_vesc_id == 0) {
+        if (!primary_vesc_detected) {
             primary_vesc_id = id;
+            primary_vesc_detected = true;
             ESP_LOGI(TAG, "Primary VESC detected: ID=%d", id);
         } else {
             ESP_LOGI(TAG, "Additional VESC detected: ID=%d (primary: %d)", id, primary_vesc_id);
@@ -296,7 +300,7 @@ static void detect_vesc_id(uint8_t id) {
 // Simple commands (single frame)
 void bldc_interface_can_set_duty(float duty) {
     uint8_t vesc_id = get_primary_vesc_id();
-    if (vesc_id == 0) {
+    if (!primary_vesc_detected) {
         return;
     }
 
@@ -310,7 +314,7 @@ void bldc_interface_can_set_duty(float duty) {
 
 void bldc_interface_can_set_current(float current) {
     uint8_t vesc_id = get_primary_vesc_id();
-    if (vesc_id == 0) {
+    if (!primary_vesc_detected) {
         return;
     }
 
@@ -324,7 +328,7 @@ void bldc_interface_can_set_current(float current) {
 
 void bldc_interface_can_set_current_brake(float current) {
     uint8_t vesc_id = get_primary_vesc_id();
-    if (vesc_id == 0) {
+    if (!primary_vesc_detected) {
         return;
     }
 
@@ -338,7 +342,7 @@ void bldc_interface_can_set_current_brake(float current) {
 
 void bldc_interface_can_set_rpm(float rpm) {
     uint8_t vesc_id = get_primary_vesc_id();
-    if (vesc_id == 0) {
+    if (!primary_vesc_detected) {
         return;
     }
 
@@ -352,7 +356,7 @@ void bldc_interface_can_set_rpm(float rpm) {
 
 void bldc_interface_can_set_pos(float pos) {
     uint8_t vesc_id = get_primary_vesc_id();
-    if (vesc_id == 0) {
+    if (!primary_vesc_detected) {
         return;
     }
 
@@ -366,7 +370,7 @@ void bldc_interface_can_set_pos(float pos) {
 
 void bldc_interface_can_set_current_rel(float current_rel) {
     uint8_t vesc_id = get_primary_vesc_id();
-    if (vesc_id == 0) {
+    if (!primary_vesc_detected) {
         return;
     }
 
@@ -380,7 +384,7 @@ void bldc_interface_can_set_current_rel(float current_rel) {
 
 void bldc_interface_can_set_current_brake_rel(float current_rel) {
     uint8_t vesc_id = get_primary_vesc_id();
-    if (vesc_id == 0) {
+    if (!primary_vesc_detected) {
         return;
     }
 
@@ -394,7 +398,7 @@ void bldc_interface_can_set_current_brake_rel(float current_rel) {
 
 void bldc_interface_can_set_handbrake(float current) {
     uint8_t vesc_id = get_primary_vesc_id();
-    if (vesc_id == 0) {
+    if (!primary_vesc_detected) {
         return;
     }
 
@@ -408,7 +412,7 @@ void bldc_interface_can_set_handbrake(float current) {
 
 void bldc_interface_can_set_handbrake_rel(float current_rel) {
     uint8_t vesc_id = get_primary_vesc_id();
-    if (vesc_id == 0) {
+    if (!primary_vesc_detected) {
         return;
     }
 
@@ -423,7 +427,7 @@ void bldc_interface_can_set_handbrake_rel(float current_rel) {
 // Multi-frame command transmission
 void bldc_interface_can_send_command(uint8_t *data, uint16_t len) {
     uint8_t vesc_id = get_primary_vesc_id();
-    if (vesc_id == 0) {
+    if (!primary_vesc_detected) {
         return;
     }
 
@@ -493,7 +497,7 @@ void bldc_interface_can_get_values(void) {
 
 void bldc_interface_can_get_mcconf_temp(void) {
     uint8_t vesc_id = get_primary_vesc_id();
-    if (vesc_id == 0) {
+    if (!primary_vesc_detected) {
         ESP_LOGW(TAG, "Cannot request MC config: no VESC detected yet");
         return;
     }
@@ -572,7 +576,7 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
         case CAN_PACKET_STATUS: {
             // Decode status message (rpm, current_motor, duty_now)
             // Only process if from primary VESC or if no primary yet
-            if (controller_id == get_primary_vesc_id() || primary_vesc_id == 0) {
+            if (controller_id == get_primary_vesc_id() || !primary_vesc_detected) {
                 ESP_LOGD(TAG, "Status message received from ID=%d", controller_id);
                 process_status_message(controller_id, data, len);
             }
@@ -581,7 +585,7 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
 
         case CAN_PACKET_STATUS_2: {
             // Decode status 2 message (amp_hours, amp_hours_charged)
-            if (controller_id == get_primary_vesc_id() || primary_vesc_id == 0) {
+            if (controller_id == get_primary_vesc_id() || !primary_vesc_detected) {
                 ESP_LOGD(TAG, "Status 2 message received from ID=%d", controller_id);
                 process_status_2_message(controller_id, data, len);
             }
@@ -590,7 +594,7 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
 
         case CAN_PACKET_STATUS_3: {
             // Decode status 3 message (watt_hours, watt_hours_charged)
-            if (controller_id == get_primary_vesc_id() || primary_vesc_id == 0) {
+            if (controller_id == get_primary_vesc_id() || !primary_vesc_detected) {
                 ESP_LOGD(TAG, "Status 3 message received from ID=%d", controller_id);
                 process_status_3_message(controller_id, data, len);
             }
@@ -599,7 +603,7 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
 
         case CAN_PACKET_STATUS_4: {
             // Decode status 4 message (temp_fet, temp_motor, current_in, pid_pos)
-            if (controller_id == get_primary_vesc_id() || primary_vesc_id == 0) {
+            if (controller_id == get_primary_vesc_id() || !primary_vesc_detected) {
                 ESP_LOGD(TAG, "Status 4 message received from ID=%d", controller_id);
                 process_status_4_message(controller_id, data, len);
             }
@@ -608,7 +612,7 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
 
         case CAN_PACKET_STATUS_5: {
             // Decode status 5 message (tachometer, v_in)
-            if (controller_id == get_primary_vesc_id() || primary_vesc_id == 0) {
+            if (controller_id == get_primary_vesc_id() || !primary_vesc_detected) {
                 ESP_LOGD(TAG, "Status 5 message received from ID=%d", controller_id);
                 process_status_5_message(controller_id, data, len);
             }
@@ -833,7 +837,7 @@ static void check_vesc_activity(void) {
                             break;
                         }
                     }
-                    if (primary_vesc_id == 0) {
+                    if (!primary_vesc_detected) {
                         ESP_LOGW(TAG, "No active VESC found");
                     }
                 }
