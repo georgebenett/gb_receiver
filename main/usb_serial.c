@@ -42,6 +42,7 @@ static void handle_cmd_get_config(const binary_packet_t* packet);
 static void handle_cmd_start_streaming(const binary_packet_t* packet);
 static void handle_cmd_stop_streaming(const binary_packet_t* packet);
 static void handle_cmd_set_stream_rate(const binary_packet_t* packet);
+static void handle_cmd_reset_odometer(const binary_packet_t* packet);
 static void handle_cmd_check_coredump(const binary_packet_t* packet);
 static void handle_cmd_get_coredump(const binary_packet_t* packet);
 
@@ -310,6 +311,9 @@ void usb_serial_process_packet(const binary_packet_t* packet) {
             break;
         case CMD_SET_STREAM_RATE:
             handle_cmd_set_stream_rate(packet);
+            break;
+        case CMD_RESET_ODOMETER:
+            handle_cmd_reset_odometer(packet);
             break;
         case CMD_CHECK_COREDUMP:
             handle_cmd_check_coredump(packet);
@@ -593,6 +597,11 @@ void usb_serial_send_stream_data(void) {
     payload[idx++] = (wheel_diameter_scaled >> 8) & 0xFF;
 
     usb_serial_send_response(RSP_STREAM_DATA, payload, idx);
+}
+
+static void handle_cmd_reset_odometer(const binary_packet_t* packet) {
+    ble_reset_trip_distance();
+    usb_serial_send_ack(CMD_RESET_ODOMETER, ERR_OK);
 }
 
 // ========== COREDUMP HANDLERS ==========
