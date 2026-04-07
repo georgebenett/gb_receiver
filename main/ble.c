@@ -7,11 +7,14 @@
 
 #include <string.h>
 #include <inttypes.h>
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
 #include "esp_system.h"
 #include "esp_log.h"
+#include "esp_timer.h"
+#include "nvs.h"
 #include "nvs_flash.h"
 #include "esp_bt.h"
 #include "driver/uart.h"
@@ -40,6 +43,10 @@ extern mc_temp_config_t* get_stored_mc_temp_config(void);
 #define GATTS_TABLE_TAG  "GATTS_SPP_DEMO"
 #define CLIENT_NAME      "GS-THUMB"
 
+#define TRIP_NVS_NAMESPACE   "trip_data"
+#define TRIP_NVS_KEY_KM      "trip_km"
+#define TRIP_SAVE_INTERVAL_MS 30000
+
 #define SPP_PROFILE_NUM             1
 #define SPP_PROFILE_APP_IDX         0
 #define ESP_SPP_APP_ID              0x56
@@ -61,6 +68,8 @@ static const uint16_t spp_service_uuid = 0xABF0;
 #endif
 
 static void send_telemetry_task(void *pvParameters);
+static void trip_nvs_load(void);
+static void trip_nvs_save(void);
 
 static const uint8_t spp_adv_data[23] = {
     /* Flags */
@@ -87,6 +96,10 @@ static uint8_t heartbeat_count_num = 0;
 static bool enable_data_ntf = false;
 static bool is_connected = false;
 static bool is_authenticated = false;  // Connection is encrypted/authenticated
+
+static float trip_km = 0.0f;
+static uint32_t trip_last_update_ms = 0;
+static uint32_t trip_last_nvs_save_ms = 0;
 
 static esp_bd_addr_t spp_remote_bda = {0x0,};
 
@@ -906,11 +919,59 @@ esp_err_t ble_spp_server_start(void)
 
     ESP_LOGI(GATTS_TABLE_TAG, "BLE Security configured with passkey: %06lu", (unsigned long)passkey);
 
+    trip_nvs_load();
+
     return ESP_OK;
 }
 
 bool ble_is_connected(void) {
     return is_connected;
+}
+
+void ble_reset_trip_distance(void) {
+    trip_km = 0.0f;
+    trip_last_update_ms = 0;
+    trip_nvs_save();
+    ESP_LOGI(GATTS_TABLE_TAG, "Trip distance reset");
+}
+
+static void trip_nvs_load(void) {
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open(TRIP_NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        trip_km = 0.0f;
+        return;
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(GATTS_TABLE_TAG, "Error opening trip NVS: %s", esp_err_to_name(err));
+        return;
+    }
+    float loaded = 0.0f;
+    size_t len = sizeof(float);
+    err = nvs_get_blob(nvs_handle, TRIP_NVS_KEY_KM, &loaded, &len);
+    if (err == ESP_OK) {
+        trip_km = loaded;
+        ESP_LOGI(GATTS_TABLE_TAG, "Trip distance loaded: %.2f km", trip_km);
+    } else {
+        trip_km = 0.0f;
+    }
+    nvs_close(nvs_handle);
+}
+
+static void trip_nvs_save(void) {
+    nvs_handle_t nvs_handle;
+    float trip_km_copy = trip_km;
+    esp_err_t err = nvs_open(TRIP_NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(GATTS_TABLE_TAG, "Error opening trip NVS for write: %s", esp_err_to_name(err));
+        return;
+    }
+    err = nvs_set_blob(nvs_handle, TRIP_NVS_KEY_KM, &trip_km_copy, sizeof(float));
+    if (err == ESP_OK) {
+        nvs_commit(nvs_handle);
+        ESP_LOGI(GATTS_TABLE_TAG, "Trip distance saved: %.2f km", trip_km_copy);
+    }
+    nvs_close(nvs_handle);
 }
 
 static void send_telemetry_task(void *pvParameters) {
@@ -919,8 +980,8 @@ static void send_telemetry_task(void *pvParameters) {
             mc_values* vesc_values = get_stored_vesc_values();
             bms_values_t* bms_values = get_stored_bms_values();
 
-            // Combined buffer for VESC (14 bytes) + BMS data (41 bytes) + compact mcconf temp (5 bytes) + aux state (1 byte) = 61 bytes
-            uint8_t buffer[61];
+            // VESC (14) + BMS (41) + motor config (5) + aux state (1) + trip_km (4) = 65 bytes
+            uint8_t buffer[65];
             int idx = 0;
 
             // Pack VESC data
@@ -1008,6 +1069,34 @@ static void send_telemetry_task(void *pvParameters) {
 
             // Pack aux output state (byte 60)
             buffer[idx++] = aux_output_get_state();
+
+            // Accumulate trip distance from ERPM and motor config (bytes 61-64)
+            uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+            if (trip_last_update_ms > 0 && mc_temp_conf != NULL && mc_temp_conf->valid &&
+                mc_temp_conf->motor_poles > 0 && mc_temp_conf->gear_ratio > 0.0f) {
+                float elapsed_hours = (now_ms - trip_last_update_ms) / 3600000.0f;
+                float pole_pairs = (float)mc_temp_conf->motor_poles / 2.0f;
+                float shaft_rpm = (float)vesc_values->rpm / pole_pairs;
+                float wheel_circumference_m = mc_temp_conf->wheel_diameter * (float)M_PI;
+                float wheel_rpm = shaft_rpm / mc_temp_conf->gear_ratio;
+                float speed_kmh = wheel_rpm * wheel_circumference_m * 60.0f / 1000.0f;
+                if (speed_kmh < 0.0f) speed_kmh = -speed_kmh;
+                trip_km += speed_kmh * elapsed_hours;
+                if (trip_km > 999.0f) trip_km = 0.0f;
+            }
+            trip_last_update_ms = now_ms;
+
+            // Periodic NVS save
+            if (now_ms - trip_last_nvs_save_ms >= TRIP_SAVE_INTERVAL_MS) {
+                trip_nvs_save();
+                trip_last_nvs_save_ms = now_ms;
+            }
+
+            int32_t trip_km_x100 = (int32_t)(trip_km * 100.0f);
+            buffer[idx++] = trip_km_x100 & 0xFF;
+            buffer[idx++] = (trip_km_x100 >> 8) & 0xFF;
+            buffer[idx++] = (trip_km_x100 >> 16) & 0xFF;
+            buffer[idx++] = (trip_km_x100 >> 24) & 0xFF;
 
             // Send notification
             esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id,

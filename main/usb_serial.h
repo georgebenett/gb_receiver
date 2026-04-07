@@ -36,6 +36,7 @@ typedef enum {
     CMD_START_STREAMING        = 0x10,  // Start real-time data streaming
     CMD_STOP_STREAMING         = 0x11,  // Stop real-time data streaming
     CMD_SET_STREAM_RATE        = 0x12,  // Set streaming rate in Hz (payload: uint16)
+    CMD_RESET_ODOMETER         = 0x13,  // Reset trip distance stored on receiver
     CMD_CHECK_COREDUMP         = 0x16,  // Check if coredump exists in flash
     CMD_GET_COREDUMP           = 0x17,  // Get coredump data (payload: chunk_offset uint16)
 
