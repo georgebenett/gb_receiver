@@ -761,7 +761,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
             xQueueSend(cmd_heartbeat_queue,&cmd,10/portTICK_PERIOD_MS);
 #endif
     	    // Create task to send telemetry data
-    	    xTaskCreate(send_telemetry_task, "telemetry", 2048, NULL, 5, NULL);
+    	    xTaskCreate(send_telemetry_task, "telemetry", 4096, NULL, 5, NULL);
         	break;
     	case ESP_GATTS_DISCONNECT_EVT:
             spp_mtu_size = 23;
@@ -951,7 +951,7 @@ static void trip_nvs_load(void) {
     err = nvs_get_blob(nvs_handle, TRIP_NVS_KEY_KM, &loaded, &len);
     if (err == ESP_OK) {
         trip_km = loaded;
-        ESP_LOGI(GATTS_TABLE_TAG, "Trip distance loaded: %.2f km", trip_km);
+        ESP_LOGI(GATTS_TABLE_TAG, "Trip distance loaded: %d.%02d km", (int)trip_km, (int)(trip_km * 100) % 100);
     } else {
         trip_km = 0.0f;
     }
@@ -969,7 +969,7 @@ static void trip_nvs_save(void) {
     err = nvs_set_blob(nvs_handle, TRIP_NVS_KEY_KM, &trip_km_copy, sizeof(float));
     if (err == ESP_OK) {
         nvs_commit(nvs_handle);
-        ESP_LOGI(GATTS_TABLE_TAG, "Trip distance saved: %.2f km", trip_km_copy);
+        ESP_LOGI(GATTS_TABLE_TAG, "Trip distance saved: %d.%02d km", (int)trip_km_copy, (int)(trip_km_copy * 100) % 100);
     }
     nvs_close(nvs_handle);
 }
