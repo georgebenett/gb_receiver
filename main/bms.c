@@ -12,6 +12,9 @@ static bms_values_t stored_bms_values = {0};
 #define START_BYTE 0xDD
 #define STOP_BYTE  0x77
 
+// Largest BMS response is cell voltages for 16S: 4 + 32 + 3 = 39 bytes. 64 is safe.
+#define BMS_RESPONSE_BUF 64
+
 static void calculate_checksum(const uint8_t *data, size_t len, uint8_t *chk_high, uint8_t *chk_low) {
     uint16_t sum = 0;
     for (size_t i = 0; i < len; i++) {
@@ -64,7 +67,7 @@ esp_err_t bms_uart_init(void) {
     ESP_ERROR_CHECK(uart_set_pin(BMS_UART_PORT, BMS_UART_PIN_A, BMS_UART_PIN_B, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
     ESP_ERROR_CHECK(uart_driver_install(BMS_UART_PORT, BMS_BUF_SIZE * 2, 0, 0, NULL, 0));
 
-    uint8_t probe[256];
+    uint8_t probe[BMS_RESPONSE_BUF];
     size_t probe_len = 0;
 
     if (try_pin_assignment(BMS_UART_PIN_A, BMS_UART_PIN_B, probe, &probe_len)) {
@@ -75,14 +78,15 @@ esp_err_t bms_uart_init(void) {
         ESP_LOGW(TAG, "BMS UART pin auto-detect: no valid response on either assignment (TX/RX may be swapped or BMS disconnected)");
     }
 
-    xTaskCreate(bms_read_task, "bms_read_task", 4096, NULL, 5, NULL);
+    xTaskCreate(bms_read_task, "bms_read_task", 8192, NULL, 5, NULL);
 
     ESP_LOGI(TAG, "BMS UART initialized");
     return ESP_OK;
 }
 
 static esp_err_t send_command(uint8_t status, uint8_t cmd, const uint8_t *data, size_t data_len, uint8_t *response, size_t *response_len) {
-    uint8_t frame[256];
+    // Max frame: start(1) + status(1) + cmd(1) + len(1) + data(<=4) + chk(2) + stop(1) = 11
+    uint8_t frame[16];
     size_t idx = 0;
 
     frame[idx++] = START_BYTE;
@@ -101,23 +105,33 @@ static esp_err_t send_command(uint8_t status, uint8_t cmd, const uint8_t *data, 
     frame[idx++] = chk_low;
     frame[idx++] = STOP_BYTE;
 
-    uart_flush(BMS_UART_PORT);
+    uart_flush_input(BMS_UART_PORT);
     uart_write_bytes(BMS_UART_PORT, (const char *)frame, idx);
 
-    // Add a small delay after sending
-    vTaskDelay(pdMS_TO_TICKS(20));  // 20ms delay
+    int len = uart_read_bytes(BMS_UART_PORT, response, BMS_RESPONSE_BUF, pdMS_TO_TICKS(200));
 
-    // Response timeout is ~100ms
-    int len = uart_read_bytes(BMS_UART_PORT, response, BMS_BUF_SIZE, 100 / portTICK_PERIOD_MS);
-
-    if (len > 0) {
-        //ESP_LOGI(TAG, "Sent command 0x%02X, received %d bytes", cmd, len);
-        *response_len = len;
-        return ESP_OK;
-    } else {
-        //ESP_LOGW(TAG, "No response from BMS for command 0x%02X", cmd);
+    if (len <= 0) {
         return ESP_FAIL;
     }
+
+    // Scan for start byte — stale partial frames can leave non-0xDD bytes at the front
+    int start = -1;
+    for (int i = 0; i < len; i++) {
+        if (response[i] == START_BYTE) {
+            start = i;
+            break;
+        }
+    }
+    if (start < 0) {
+        return ESP_FAIL;
+    }
+    if (start > 0) {
+        len -= start;
+        memmove(response, response + start, len);
+    }
+
+    *response_len = len;
+    return ESP_OK;
 }
 
 esp_err_t bms_read_basic_info(uint8_t *response, size_t *response_len) {
@@ -134,7 +148,7 @@ esp_err_t bms_read_bms_version(uint8_t *response, size_t *response_len) {
 
 esp_err_t bms_control_mos(mos_control_t mode) {
     uint8_t data[2] = {0x00, mode};
-    uint8_t response[64];
+    uint8_t response[BMS_RESPONSE_BUF];
     size_t response_len = 0;
     return send_command(0x5A, 0xE1, data, sizeof(data), response, &response_len);
 }
@@ -186,7 +200,7 @@ static void print_bms_values(uint8_t *data, size_t len) {
 }
 
 static void bms_read_task(void *pvParameters) {
-    uint8_t response[256];
+    uint8_t response[BMS_RESPONSE_BUF];
     size_t response_len;
     uint8_t consecutive_failures = 0;
     const uint8_t MAX_FAILURES = 3;
