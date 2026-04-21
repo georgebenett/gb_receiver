@@ -700,8 +700,14 @@ static void trip_nvs_save(void) {
     }
     err = nvs_set_blob(nvs_handle, TRIP_NVS_KEY_KM, &trip_km_copy, sizeof(float));
     if (err == ESP_OK) {
-        nvs_commit(nvs_handle);
-        ESP_LOGI(GATTS_TABLE_TAG, "Trip distance saved: %d.%02d km", (int)trip_km_copy, (int)(trip_km_copy * 100) % 100);
+        err = nvs_commit(nvs_handle);
+        if (err != ESP_OK) {
+            ESP_LOGE(GATTS_TABLE_TAG, "Trip NVS commit failed: %s", esp_err_to_name(err));
+        } else {
+            ESP_LOGI(GATTS_TABLE_TAG, "Trip distance saved: %d.%02d km", (int)trip_km_copy, (int)(trip_km_copy * 100) % 100);
+        }
+    } else {
+        ESP_LOGE(GATTS_TABLE_TAG, "Trip NVS set failed: %s", esp_err_to_name(err));
     }
     nvs_close(nvs_handle);
 }
@@ -805,7 +811,8 @@ static void send_telemetry_task(void *pvParameters) {
             // Accumulate trip distance from ERPM and motor config (bytes 61-64)
             uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
             if (trip_last_update_ms > 0 && mc_temp_conf != NULL && mc_temp_conf->valid &&
-                mc_temp_conf->motor_poles > 0 && mc_temp_conf->gear_ratio > 0.0f) {
+                mc_temp_conf->motor_poles > 0 && mc_temp_conf->gear_ratio > 0.0f &&
+                mc_temp_conf->wheel_diameter > 0.0f) {
                 float elapsed_hours = (now_ms - trip_last_update_ms) / 3600000.0f;
                 float pole_pairs = (float)mc_temp_conf->motor_poles / 2.0f;
                 float shaft_rpm = (float)vesc_values->rpm / pole_pairs;

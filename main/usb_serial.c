@@ -380,7 +380,7 @@ static void handle_cmd_get_config(const binary_packet_t* packet) {
     payload[idx++] = flags;
 
     // Current throttle value (from BLE)
-    uint16_t throttle_value = current_throttle_value;
+    uint16_t throttle_value = throttle_get_value();
     payload[idx++] = throttle_value & 0xFF;
     payload[idx++] = (throttle_value >> 8) & 0xFF;
 
@@ -484,7 +484,7 @@ void usb_serial_send_stream_data(void) {
     payload[idx++] = flags;
 
     // Current throttle value from BLE (2 bytes, little-endian)
-    uint16_t throttle_value = current_throttle_value;
+    uint16_t throttle_value = throttle_get_value();
     payload[idx++] = throttle_value & 0xFF;
     payload[idx++] = (throttle_value >> 8) & 0xFF;
 
