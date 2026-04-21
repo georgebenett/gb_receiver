@@ -4,6 +4,7 @@
 #include "freertos/task.h"
 #include "freertos/timers.h"
 #include <stdio.h>
+#include <stdatomic.h>
 #include "bldc_interface.h"
 #include "hw_config.h"
 #include "led.h"
@@ -11,7 +12,11 @@
 
 #define THROTTLE_TAG "THROTTLE"
 
-uint16_t current_throttle_value = THROTTLE_NEUTRAL_VALUE;
+static _Atomic uint16_t current_throttle_value = THROTTLE_NEUTRAL_VALUE;
+
+uint16_t throttle_get_value(void) {
+    return atomic_load(&current_throttle_value);
+}
 
 static TimerHandle_t throttle_timeout_timer = NULL;
 static bool timeout_monitoring_active = false;
@@ -46,7 +51,7 @@ esp_err_t throttle_init(void)
 
 void throttle_update_value(uint16_t value)
 {
-    current_throttle_value = value;
+    atomic_store(&current_throttle_value, value);
     throttle_reset_timeout();  // Reset the timeout timer
     led_set_connection_state(true);  // Set LED to connected state on packet reception
     aux_output_update_pwm();  // Update aux output LED PWM with new throttle value
@@ -55,7 +60,7 @@ void throttle_update_value(uint16_t value)
 
 void throttle_reset_value(void)
 {
-    current_throttle_value = THROTTLE_NEUTRAL_VALUE;
+    atomic_store(&current_throttle_value, (uint16_t)THROTTLE_NEUTRAL_VALUE);
 }
 
 void throttle_timeout_callback(TimerHandle_t xTimer)
@@ -101,7 +106,7 @@ void throttle_stop_timeout_monitor(void)
 static void send_nunchuck_throttle(void *pvParameters) {
 
     while (1) {
-        uint8_t y_value = current_throttle_value;
+        uint8_t y_value = (uint8_t)throttle_get_value();
         // Create packet for nunchuck data
         uint8_t buffer[5];
         int32_t ind = 0;

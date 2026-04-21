@@ -170,8 +170,10 @@ static void print_bms_values(uint8_t *data, size_t len) {
     switch (status) {
         case 0x04:  // Cell Voltages
             if (len >= 6) {
-                stored_bms_values.num_cells = data_len / 2;
-                for (int i = 0; i < stored_bms_values.num_cells && (i * 2 + 4) < len - 3; i++) {
+                int num_cells = data_len / 2;
+                if (num_cells > 16) num_cells = 16;
+                stored_bms_values.num_cells = (uint8_t)num_cells;
+                for (int i = 0; i < num_cells && (i * 2 + 5) < (int)len; i++) {
                     uint16_t cell_mv = (data[4 + i * 2] << 8) | data[5 + i * 2];
                     stored_bms_values.cell_voltages[i] = cell_mv / 1000.0f;
                 }

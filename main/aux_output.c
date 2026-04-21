@@ -27,11 +27,20 @@ static uint8_t aux_output_state = 0;
 static void aux_output_save_state(void) {
     nvs_handle_t handle;
     esp_err_t err = nvs_open(AUX_NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (err == ESP_OK) {
-        nvs_set_u8(handle, AUX_NVS_KEY_STATE, aux_output_state);
-        nvs_commit(handle);
-        nvs_close(handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open aux NVS: %s", esp_err_to_name(err));
+        return;
     }
+    err = nvs_set_u8(handle, AUX_NVS_KEY_STATE, aux_output_state);
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Aux NVS commit failed: %s", esp_err_to_name(err));
+        }
+    } else {
+        ESP_LOGE(TAG, "Aux NVS set failed: %s", esp_err_to_name(err));
+    }
+    nvs_close(handle);
 }
 
 static void aux_output_load_state(void) {
@@ -110,7 +119,7 @@ void aux_output_update_pwm(void) {
 
     if (aux_output_state) {
         // When ON, scale throttle value to PWM duty
-        duty_scaled = (current_throttle_value * AUX_LED_PWM_MAX_DUTY) / THROTTLE_MAX_VALUE;
+        duty_scaled = (throttle_get_value() * AUX_LED_PWM_MAX_DUTY) / THROTTLE_MAX_VALUE;
     } else {
         duty_scaled = 0;
     }
