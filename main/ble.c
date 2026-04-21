@@ -17,9 +17,7 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "esp_bt.h"
-#include "driver/uart.h"
 #include "driver/gpio.h"
-#include "hal/gpio_ll.h"
 
 #include "esp_gap_ble_api.h"
 #include "esp_gatts_api.h"
@@ -29,7 +27,6 @@
 #include "ble.h"
 #include "esp_gatt_common_api.h"
 #include "throttle.h"
-#include "ble.h"
 #include "led.h"
 #include "bms.h"
 #include "datatypes.h"
@@ -45,7 +42,7 @@ extern mc_temp_config_t* get_stored_mc_temp_config(void);
 
 #define TRIP_NVS_NAMESPACE   "trip_data"
 #define TRIP_NVS_KEY_KM      "trip_km"
-#define TRIP_SAVE_INTERVAL_MS 30000
+#define TRIP_NVS_SAVE_INTERVAL_KM 0.1f  // save every 100 meters
 
 #define SPP_PROFILE_NUM             1
 #define SPP_PROFILE_APP_IDX         0
@@ -63,10 +60,6 @@ static const uint16_t spp_service_uuid = 0xABF0;
 #define ESP_GATT_UUID_SPP_COMMAND_RECEIVE   0xABF3
 #define ESP_GATT_UUID_SPP_COMMAND_NOTIFY    0xABF4
 
-#ifdef SUPPORT_HEARTBEAT
-#define ESP_GATT_UUID_SPP_HEARTBEAT         0xABF5
-#endif
-
 static void send_telemetry_task(void *pvParameters);
 static void trip_nvs_load(void);
 static void trip_nvs_save(void);
@@ -83,23 +76,14 @@ static const uint8_t spp_adv_data[23] = {
 static uint16_t spp_mtu_size = 23;
 static uint16_t spp_conn_id = 0xffff;
 static esp_gatt_if_t spp_gatts_if = 0xff;
-QueueHandle_t spp_uart_queue = NULL;
 static QueueHandle_t cmd_cmd_queue = NULL;
-
-#ifdef SUPPORT_HEARTBEAT
-static QueueHandle_t cmd_heartbeat_queue = NULL;
-static uint8_t  heartbeat_s[9] = {'E','s','p','r','e','s','s','i','f'};
-static bool enable_heart_ntf = false;
-static uint8_t heartbeat_count_num = 0;
-#endif
-
 static bool enable_data_ntf = false;
 static bool is_connected = false;
 static bool is_authenticated = false;  // Connection is encrypted/authenticated
 
 static float trip_km = 0.0f;
 static uint32_t trip_last_update_ms = 0;
-static uint32_t trip_last_nvs_save_ms = 0;
+static float trip_km_nvs_committed = 0.0f;
 
 static esp_bd_addr_t spp_remote_bda = {0x0,};
 
@@ -110,6 +94,7 @@ static TimerHandle_t prefer_paired_timer = NULL;
 static TaskHandle_t prefer_paired_task_handle = NULL;
 
 static uint16_t spp_handle_table[SPP_IDX_NB];
+static TaskHandle_t telemetry_task_handle = NULL;
 
 static esp_ble_adv_params_t spp_adv_params = {
     .adv_int_min        = 0x20,
@@ -135,27 +120,6 @@ struct gatts_profile_inst {
     esp_bt_uuid_t descr_uuid;
 };
 
-typedef struct spp_receive_data_node{
-    int32_t len;
-    uint8_t * node_buff;
-    struct spp_receive_data_node * next_node;
-}spp_receive_data_node_t;
-
-static spp_receive_data_node_t * temp_spp_recv_data_node_p1 = NULL;
-static spp_receive_data_node_t * temp_spp_recv_data_node_p2 = NULL;
-
-typedef struct spp_receive_data_buff{
-    int32_t node_num;
-    int32_t buff_size;
-    spp_receive_data_node_t * first_node;
-}spp_receive_data_buff_t;
-
-static spp_receive_data_buff_t SppRecvDataBuff = {
-    .node_num   = 0,
-    .buff_size  = 0,
-    .first_node = NULL
-};
-
 static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param);
 
 /* One gatt-based profile one app_id and one gatts_if, this array will store the gatts_if returned by ESP_GATTS_REG_EVT */
@@ -179,10 +143,6 @@ static const uint16_t character_client_config_uuid = ESP_GATT_UUID_CHAR_CLIENT_C
 static const uint8_t char_prop_read_notify = ESP_GATT_CHAR_PROP_BIT_READ|ESP_GATT_CHAR_PROP_BIT_NOTIFY;
 static const uint8_t char_prop_read_write = ESP_GATT_CHAR_PROP_BIT_WRITE_NR|ESP_GATT_CHAR_PROP_BIT_READ;
 
-#ifdef SUPPORT_HEARTBEAT
-static const uint8_t char_prop_read_write_notify = ESP_GATT_CHAR_PROP_BIT_READ|ESP_GATT_CHAR_PROP_BIT_WRITE_NR|ESP_GATT_CHAR_PROP_BIT_NOTIFY;
-#endif
-
 static const uint16_t spp_data_receive_uuid = ESP_GATT_UUID_SPP_DATA_RECEIVE;
 static const uint8_t  spp_data_receive_val[20] = {0x00};
 
@@ -196,12 +156,6 @@ static const uint8_t  spp_command_val[10] = {0x00};
 static const uint16_t spp_status_uuid = ESP_GATT_UUID_SPP_COMMAND_NOTIFY;
 static const uint8_t  spp_status_val[10] = {0x00};
 static const uint8_t  spp_status_ccc[2] = {0x00, 0x00};
-
-#ifdef SUPPORT_HEARTBEAT
-static const uint16_t spp_heart_beat_uuid = ESP_GATT_UUID_SPP_HEARTBEAT;
-static const uint8_t  spp_heart_beat_val[2] = {0x00, 0x00};
-static const uint8_t  spp_heart_beat_ccc[2] = {0x00, 0x00};
-#endif
 
 static const esp_gatts_attr_db_t spp_gatt_db[SPP_IDX_NB] =
 {
@@ -259,23 +213,6 @@ static const esp_gatts_attr_db_t spp_gatt_db[SPP_IDX_NB] =
     [SPP_IDX_SPP_STATUS_CFG]         =
     {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_client_config_uuid, ESP_GATT_PERM_READ|ESP_GATT_PERM_WRITE,
     sizeof(uint16_t),sizeof(spp_status_ccc), (uint8_t *)spp_status_ccc}},
-
-#ifdef SUPPORT_HEARTBEAT
-    //SPP -  Heart beat characteristic Declaration
-    [SPP_IDX_SPP_HEARTBEAT_CHAR]  =
-    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_declaration_uuid, ESP_GATT_PERM_READ,
-    CHAR_DECLARATION_SIZE,CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read_write_notify}},
-
-    //SPP -  Heart beat characteristic Value
-    [SPP_IDX_SPP_HEARTBEAT_VAL]   =
-    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&spp_heart_beat_uuid, ESP_GATT_PERM_READ|ESP_GATT_PERM_WRITE,
-    sizeof(spp_heart_beat_val), sizeof(spp_heart_beat_val), (uint8_t *)spp_heart_beat_val}},
-
-    //SPP -  Heart beat characteristic - Client Characteristic Configuration Descriptor
-    [SPP_IDX_SPP_HEARTBEAT_CFG]         =
-    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&character_client_config_uuid, ESP_GATT_PERM_READ|ESP_GATT_PERM_WRITE,
-    sizeof(uint16_t),sizeof(spp_data_notify_ccc), (uint8_t *)spp_heart_beat_ccc}},
-#endif
 };
 
 static uint8_t find_char_and_desr_index(uint16_t handle)
@@ -289,146 +226,6 @@ static uint8_t find_char_and_desr_index(uint16_t handle)
     }
 
     return error;
-}
-
-static bool store_wr_buffer(esp_ble_gatts_cb_param_t *p_data)
-{
-    temp_spp_recv_data_node_p1 = (spp_receive_data_node_t *)malloc(sizeof(spp_receive_data_node_t));
-
-    if(temp_spp_recv_data_node_p1 == NULL){
-        ESP_LOGI(GATTS_TABLE_TAG, "malloc error %s %d", __func__, __LINE__);
-        return false;
-    }
-    if(temp_spp_recv_data_node_p2 != NULL){
-        temp_spp_recv_data_node_p2->next_node = temp_spp_recv_data_node_p1;
-    }
-    temp_spp_recv_data_node_p1->len = p_data->write.len;
-    SppRecvDataBuff.buff_size += p_data->write.len;
-    temp_spp_recv_data_node_p1->next_node = NULL;
-    temp_spp_recv_data_node_p1->node_buff = (uint8_t *)malloc(p_data->write.len);
-    temp_spp_recv_data_node_p2 = temp_spp_recv_data_node_p1;
-    if (temp_spp_recv_data_node_p1->node_buff == NULL) {
-        ESP_LOGI(GATTS_TABLE_TAG, "malloc error %s %d\n", __func__, __LINE__);
-        temp_spp_recv_data_node_p1->len = 0;
-    } else {
-        memcpy(temp_spp_recv_data_node_p1->node_buff,p_data->write.value,p_data->write.len);
-    }
-
-    if(SppRecvDataBuff.node_num == 0){
-        SppRecvDataBuff.first_node = temp_spp_recv_data_node_p1;
-        SppRecvDataBuff.node_num++;
-    }else{
-        SppRecvDataBuff.node_num++;
-    }
-
-    return true;
-}
-
-static void free_write_buffer(void)
-{
-    temp_spp_recv_data_node_p1 = SppRecvDataBuff.first_node;
-
-    while(temp_spp_recv_data_node_p1 != NULL){
-        temp_spp_recv_data_node_p2 = temp_spp_recv_data_node_p1->next_node;
-        if (temp_spp_recv_data_node_p1->node_buff) {
-            free(temp_spp_recv_data_node_p1->node_buff);
-        }
-        free(temp_spp_recv_data_node_p1);
-        temp_spp_recv_data_node_p1 = temp_spp_recv_data_node_p2;
-    }
-
-    SppRecvDataBuff.node_num = 0;
-    SppRecvDataBuff.buff_size = 0;
-    SppRecvDataBuff.first_node = NULL;
-}
-
-static void print_write_buffer(void)
-{
-    temp_spp_recv_data_node_p1 = SppRecvDataBuff.first_node;
-
-    while(temp_spp_recv_data_node_p1 != NULL){
-        uart_write_bytes(UART_NUM_0, (char *)(temp_spp_recv_data_node_p1->node_buff), temp_spp_recv_data_node_p1->len);
-        temp_spp_recv_data_node_p1 = temp_spp_recv_data_node_p1->next_node;
-    }
-}
-
-void uart_task(void *pvParameters)
-{
-    uart_event_t event;
-    uint8_t total_num = 0;
-    uint8_t current_num = 0;
-
-    for (;;) {
-        //Waiting for UART event.
-        if (xQueueReceive(spp_uart_queue, (void * )&event, (TickType_t)portMAX_DELAY)) {
-            switch (event.type) {
-            //Event of UART receiving data
-            case UART_DATA:
-                if ((event.size)&&(is_connected)) {
-                    uint8_t * temp = NULL;
-                    uint8_t * ntf_value_p = NULL;
-#ifdef SUPPORT_HEARTBEAT
-                    if(!enable_heart_ntf){
-                        ESP_LOGE(GATTS_TABLE_TAG, "%s do not enable heartbeat Notify", __func__);
-                        break;
-                    }
-#endif
-                    if(!enable_data_ntf){
-                        ESP_LOGE(GATTS_TABLE_TAG, "%s do not enable data Notify", __func__);
-                        break;
-                    }
-                    temp = (uint8_t *)malloc(sizeof(uint8_t)*event.size);
-                    if(temp == NULL){
-                        ESP_LOGE(GATTS_TABLE_TAG, "%s malloc.1 failed", __func__);
-                        break;
-                    }
-                    memset(temp,0x0,event.size);
-                    uart_read_bytes(UART_NUM_0,temp,event.size,portMAX_DELAY);
-                    if(event.size <= (spp_mtu_size - 3)){
-                        esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id, spp_handle_table[SPP_IDX_SPP_DATA_NTY_VAL],event.size, temp, false);
-                    }else if(event.size > (spp_mtu_size - 3)){
-                        if((event.size%(spp_mtu_size - 7)) == 0){
-                            total_num = event.size/(spp_mtu_size - 7);
-                        }else{
-                            total_num = event.size/(spp_mtu_size - 7) + 1;
-                        }
-                        current_num = 1;
-                        ntf_value_p = (uint8_t *)malloc((spp_mtu_size-3)*sizeof(uint8_t));
-                        if(ntf_value_p == NULL){
-                            ESP_LOGE(GATTS_TABLE_TAG, "%s malloc.2 failed", __func__);
-                            free(temp);
-                            break;
-                        }
-                        while(current_num <= total_num){
-                            if(current_num < total_num){
-                                ntf_value_p[0] = '#';
-                                ntf_value_p[1] = '#';
-                                ntf_value_p[2] = total_num;
-                                ntf_value_p[3] = current_num;
-                                memcpy(ntf_value_p + 4,temp + (current_num - 1)*(spp_mtu_size-7),(spp_mtu_size-7));
-                                esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id, spp_handle_table[SPP_IDX_SPP_DATA_NTY_VAL],(spp_mtu_size-3), ntf_value_p, false);
-                            }else if(current_num == total_num){
-                                ntf_value_p[0] = '#';
-                                ntf_value_p[1] = '#';
-                                ntf_value_p[2] = total_num;
-                                ntf_value_p[3] = current_num;
-                                memcpy(ntf_value_p + 4,temp + (current_num - 1)*(spp_mtu_size-7),(event.size - (current_num - 1)*(spp_mtu_size - 7)));
-                                esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id, spp_handle_table[SPP_IDX_SPP_DATA_NTY_VAL],(event.size - (current_num - 1)*(spp_mtu_size - 7) + 4), ntf_value_p, false);
-                            }
-                            vTaskDelay(20 / portTICK_PERIOD_MS);
-                            current_num++;
-                        }
-                        free(ntf_value_p);
-                    }
-                    free(temp);
-                }
-                break;
-            default:
-                break;
-            }
-        }
-    }
-    vTaskDelete(NULL);
 }
 
 // --- Paired remote NVS helpers ---
@@ -524,53 +321,6 @@ static void stop_prefer_paired_window(void)
     }
 }
 
-static void spp_uart_init(void)
-{
-    uart_config_t uart_config = {
-        .baud_rate = 115200,
-        .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_RTS,
-        .rx_flow_ctrl_thresh = 122,
-        .source_clk = UART_SCLK_DEFAULT,
-    };
-
-    //Install UART driver, and get the queue.
-    uart_driver_install(UART_NUM_0, 4096, 8192, 10,&spp_uart_queue,0);
-    //Set UART parameters
-    uart_param_config(UART_NUM_0, &uart_config);
-    //Set UART pins
-    uart_set_pin(UART_NUM_0, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-    xTaskCreate(uart_task, "uTask", 2048, (void*)UART_NUM_0, 8, NULL);
-}
-
-#ifdef SUPPORT_HEARTBEAT
-void spp_heartbeat_task(void * arg)
-{
-    uint16_t cmd_id;
-
-    for(;;) {
-        vTaskDelay(50 / portTICK_PERIOD_MS);
-        if(xQueueReceive(cmd_heartbeat_queue, &cmd_id, portMAX_DELAY)) {
-            while(1){
-                heartbeat_count_num++;
-                vTaskDelay(5000/ portTICK_PERIOD_MS);
-                if((heartbeat_count_num >3)&&(is_connected)){
-                    esp_ble_gap_disconnect(spp_remote_bda);
-                }
-                if(is_connected && enable_heart_ntf){
-                    esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id, spp_handle_table[SPP_IDX_SPP_HEARTBEAT_VAL],sizeof(heartbeat_s), heartbeat_s, false);
-                }else if(!is_connected){
-                    break;
-                }
-            }
-        }
-    }
-    vTaskDelete(NULL);
-}
-#endif
-
 void spp_cmd_task(void * arg)
 {
     uint8_t * cmd_id;
@@ -578,7 +328,7 @@ void spp_cmd_task(void * arg)
     for(;;){
         vTaskDelay(50 / portTICK_PERIOD_MS);
         if(xQueueReceive(cmd_cmd_queue, &cmd_id, portMAX_DELAY)) {
-            esp_log_buffer_char(GATTS_TABLE_TAG,(char *)(cmd_id),strlen((char *)cmd_id));
+            ESP_LOG_BUFFER_CHAR(GATTS_TABLE_TAG,(char *)(cmd_id),strlen((char *)cmd_id));
             free(cmd_id);
         }
     }
@@ -587,13 +337,6 @@ void spp_cmd_task(void * arg)
 
 static void spp_task_init(void)
 {
-    spp_uart_init();
-
-#ifdef SUPPORT_HEARTBEAT
-    cmd_heartbeat_queue = xQueueCreate(10, sizeof(uint32_t));
-    xTaskCreate(spp_heartbeat_task, "spp_heartbeat_task", 2048, NULL, 10, NULL);
-#endif
-
     cmd_cmd_queue = xQueueCreate(10, sizeof(uint32_t));
     xTaskCreate(spp_cmd_task, "spp_cmd_task", 2048, NULL, 10, NULL);
 }
@@ -714,19 +457,8 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                 throttle_update_value(adc_value);
                 throttle_reset_timeout();
                 aux_output_set(aux_output_state);
-            }else if((p_data->write.is_prep == true)&&(res == SPP_IDX_SPP_DATA_RECV_VAL)){
-                ESP_LOGI(GATTS_TABLE_TAG, "ESP_GATTS_PREP_WRITE_EVT : handle = %d", res);
-                store_wr_buffer(p_data);
             }
       	 	break;
-    	}
-    	case ESP_GATTS_EXEC_WRITE_EVT:{
-    	    ESP_LOGI(GATTS_TABLE_TAG, "ESP_GATTS_EXEC_WRITE_EVT");
-    	    if(p_data->exec_write.exec_write_flag){
-    	        print_write_buffer();
-    	        free_write_buffer();
-    	    }
-    	    break;
     	}
     	case ESP_GATTS_MTU_EVT:
     	    spp_mtu_size = p_data->mtu.mtu;
@@ -756,12 +488,12 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     	        memcmp(paired_remote_mac, p_data->connect.remote_bda, sizeof(esp_bd_addr_t)) != 0) {
     	        ble_paired_remote_save_mac(p_data->connect.remote_bda);
     	    }
-#ifdef SUPPORT_HEARTBEAT
-    	    uint16_t cmd = 0;
-            xQueueSend(cmd_heartbeat_queue,&cmd,10/portTICK_PERIOD_MS);
-#endif
-    	    // Create task to send telemetry data
-    	    xTaskCreate(send_telemetry_task, "telemetry", 4096, NULL, 5, NULL);
+    	    // Delete previous telemetry task if it leaked from a prior connection
+    	    if (telemetry_task_handle != NULL) {
+    	        vTaskDelete(telemetry_task_handle);
+    	        telemetry_task_handle = NULL;
+    	    }
+    	    xTaskCreate(send_telemetry_task, "telemetry", 4096, NULL, 5, &telemetry_task_handle);
         	break;
     	case ESP_GATTS_DISCONNECT_EVT:
             spp_mtu_size = 23;
@@ -770,10 +502,9 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     	    throttle_reset_value();
     	    throttle_stop_timeout_monitor();
     	    enable_data_ntf = false;
-#ifdef SUPPORT_HEARTBEAT
-    	    enable_heart_ntf = false;
-    	    heartbeat_count_num = 0;
-#endif
+    	    // Reset the odometer time reference so the disconnect gap is not
+    	    // counted as riding distance when the next connection resumes.
+    	    trip_last_update_ms = 0;
     	    // Re-enter prefer-paired window on disconnect if we have a known remote
     	    if (has_paired_remote) {
     	        spp_adv_params.adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_WLST;
@@ -930,6 +661,7 @@ bool ble_is_connected(void) {
 
 void ble_reset_trip_distance(void) {
     trip_km = 0.0f;
+    trip_km_nvs_committed = 0.0f;
     trip_last_update_ms = 0;
     trip_nvs_save();
     ESP_LOGI(GATTS_TABLE_TAG, "Trip distance reset");
@@ -1082,14 +814,13 @@ static void send_telemetry_task(void *pvParameters) {
                 float speed_kmh = wheel_rpm * wheel_circumference_m * 60.0f / 1000.0f;
                 if (speed_kmh < 0.0f) speed_kmh = -speed_kmh;
                 trip_km += speed_kmh * elapsed_hours;
-                if (trip_km > 999.0f) trip_km = 0.0f;
             }
             trip_last_update_ms = now_ms;
 
-            // Periodic NVS save
-            if (now_ms - trip_last_nvs_save_ms >= TRIP_SAVE_INTERVAL_MS) {
+            // Commit to NVS every 100 m to minimise flash wear
+            if (trip_km - trip_km_nvs_committed >= TRIP_NVS_SAVE_INTERVAL_KM) {
                 trip_nvs_save();
-                trip_last_nvs_save_ms = now_ms;
+                trip_km_nvs_committed = trip_km;
             }
 
             int32_t trip_km_x100 = (int32_t)(trip_km * 100.0f);

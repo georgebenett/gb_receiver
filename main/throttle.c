@@ -19,8 +19,6 @@ static bool timeout_monitoring_active = false;
 static void throttle_timeout_callback(TimerHandle_t xTimer);
 static void send_nunchuck_throttle(void *pvParameters);
 
-//TaskHandle_t throttle_print_task_handle = NULL;
-
 esp_err_t throttle_init(void)
 {
     // Create task for nunchuck testing
@@ -65,18 +63,6 @@ void throttle_timeout_callback(TimerHandle_t xTimer)
     throttle_reset_value();
     led_set_connection_state(false);  // Set LED to disconnected state on timeout
 }
-/*
-void throttle_print_task(void *pvParameters)
-{
-    while (1) {
-        mc_values* vesc_values = get_stored_vesc_values();
-        ESP_LOGI(THROTTLE_TAG, "Throttle: %d | VESC Voltage: %.2fV | Motor RPM: %.1f",
-            current_throttle_value,
-            vesc_values->v_in,
-            vesc_values->rpm);
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-}*/
 
 void throttle_reset_timeout(void)
 {

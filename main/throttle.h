@@ -11,7 +11,6 @@
 #define VESC_UPDATE_INTERVAL_MS 50
 
 extern uint16_t current_throttle_value;
-extern TaskHandle_t throttle_print_task_handle;
 
 // Function declarations
 esp_err_t throttle_init(void);
@@ -20,9 +19,4 @@ void throttle_reset_value(void);
 void throttle_reset_timeout(void);
 void throttle_start_timeout_monitor(void);
 void throttle_stop_timeout_monitor(void);
-//void throttle_print_task(void *pvParameters);
-
-// External variable declarations
-//extern TaskHandle_t throttle_print_task_handle;
-//extern mc_values* get_stored_vesc_values(void);
 

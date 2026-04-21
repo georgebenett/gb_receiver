@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "driver/gpio.h"
 #include "datatypes.h"
 
 // CAN Packet IDs (from VESC firmware)
@@ -36,7 +37,7 @@ typedef enum {
 } CAN_PACKET_ID;
 
 // Functions
-void bldc_interface_can_init(void);
+void bldc_interface_can_init(gpio_num_t tx_pin, gpio_num_t rx_pin);
 void bldc_interface_can_deinit(void);
 
 // Simple commands (single frame)
