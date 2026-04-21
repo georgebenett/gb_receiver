@@ -9,7 +9,6 @@
 #include "bldc_interface.h"
 #include "buffer.h"
 #include "crc.h"
-#include "hw_config.h"
 #include "esp_log.h"
 #include "driver/twai.h"
 #include "freertos/FreeRTOS.h"
@@ -56,6 +55,12 @@ static void process_status_5_message(uint8_t id, uint8_t *data, uint8_t len);
 static void update_and_notify_values(void);
 static void detect_vesc_id(uint8_t id);
 static uint8_t get_primary_vesc_id(void);
+
+// Maximum plausible ERPM for any supported vehicle.
+// During VESC motor detection the VESC broadcasts STATUS packets with
+// electrical frequencies that translate to millions of ERPM.  Any reading
+// beyond this threshold is noise from detection and must be discarded.
+#define MAX_VALID_ERPM 200000
 
 // CAN transmit fault tracking
 static uint32_t can_consecutive_failures = 0;
@@ -111,10 +116,10 @@ static vesc_rx_buf_t *rx_buf_for_id(uint8_t id, bool create) {
     return &vesc_rx_bufs[0];
 }
 
-void bldc_interface_can_init(void) {
+void bldc_interface_can_init(gpio_num_t tx_pin, gpio_num_t rx_pin) {
     // Configure TWAI (CAN) driver
     twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(
-        CAN_TX_PIN, CAN_RX_PIN, TWAI_MODE_NORMAL);
+        tx_pin, rx_pin, TWAI_MODE_NORMAL);
     g_config.tx_queue_len = 5;
     g_config.rx_queue_len = 10;
     // Note: ESP_INTR_FLAG_IRAM removed - TWAI driver functions are not in IRAM
@@ -745,7 +750,17 @@ static void process_status_message(uint8_t id, uint8_t *data, uint8_t len) {
 
     int32_t ind = 0;
 
-    accumulated_values.rpm = (float)buffer_get_int32(data, &ind);
+    int32_t raw_rpm = buffer_get_int32(data, &ind);
+
+    // Discard ERPM values that exceed any physical limit — these occur during
+    // VESC motor detection when the controller sweeps at high electrical
+    // frequencies and would otherwise produce absurd speeds on the remote.
+    if (raw_rpm > MAX_VALID_ERPM || raw_rpm < -MAX_VALID_ERPM) {
+        ESP_LOGD(TAG, "Discarding out-of-range ERPM=%"PRId32" (motor detection?)", raw_rpm);
+        raw_rpm = 0;
+    }
+
+    accumulated_values.rpm = (float)raw_rpm;
     accumulated_values.current_motor = (float)buffer_get_int16(data, &ind) / 10.0;
     accumulated_values.duty_now = (float)buffer_get_int16(data, &ind) / 1000.0;
     accumulated_values.vesc_id = id;

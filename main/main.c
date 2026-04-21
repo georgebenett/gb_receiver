@@ -5,12 +5,12 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "hw_config.h"
 #include "ble.h"
 #include "throttle.h"
 #include "led.h"
 #include "bms.h"
 #include "bldc_interface.h"
-#include "bms_interface_uart.h"
 #include "bldc_interface_can.h"
 #include "aux_output.h"
 #include "usb_serial.h"
@@ -136,10 +136,9 @@ void app_main(void) {
     usb_serial_start_task();
 
     throttle_init();
-    bms_interface_uart_init();
 
-    // Initialize CAN interface for VESC communication (replaces UART)
-    bldc_interface_can_init();
+    // Initialize CAN interface for VESC communication
+    bldc_interface_can_init(CAN_TX_PIN, CAN_RX_PIN);
     bldc_interface_can_set_rx_value_func(bldc_values_received);
     bldc_interface_can_set_rx_mcconf_temp_func(mcconf_temp_received);
 
