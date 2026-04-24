@@ -58,8 +58,6 @@ void bldc_interface_can_get_mcconf(void);
 void bldc_interface_can_get_appconf(void);
 void bldc_interface_can_send_command(uint8_t *data, uint16_t len);
 
-// Wrapper to make bldc_interface work with CAN (for throttle, etc.)
-// Function signature matches bldc_interface_init requirements
 void bldc_interface_can_send_packet(unsigned char *data, unsigned int len);
 
 // Status message callbacks

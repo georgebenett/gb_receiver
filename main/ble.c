@@ -30,7 +30,7 @@
 #include "led.h"
 #include "bms.h"
 #include "datatypes.h"
-#include "bldc_interface.h"
+#include "bldc_interface_can.h"
 #include "aux_output.h"
 
 extern mc_values* get_stored_vesc_values(void);
@@ -479,7 +479,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     	    is_connected = true;
     	    throttle_reset_value();  // Reset to THROTTLE_NEUTRAL_VALUE on new connection
     	    throttle_start_timeout_monitor();
-            bldc_interface_get_mcconf_temp(); // Fetch compact motor config for BLE telemetry
+            bldc_interface_can_get_mcconf_temp(); // Fetch compact motor config for BLE telemetry
     	    memcpy(&spp_remote_bda,&p_data->connect.remote_bda,sizeof(esp_bd_addr_t));
     	    // Stop prefer-paired window — connection established
     	    stop_prefer_paired_window();

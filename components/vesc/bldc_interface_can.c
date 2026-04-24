@@ -6,7 +6,6 @@
  */
 
 #include "bldc_interface_can.h"
-#include "bldc_interface.h"
 #include "buffer.h"
 #include "crc.h"
 #include "esp_log.h"
@@ -44,6 +43,8 @@ static bool vesc_detection_logged = false;
 // Callbacks
 static void(*rx_value_func)(mc_values *values) = NULL;
 static void(*rx_mcconf_temp_func)(mc_temp_config_t *conf) = NULL;
+
+static mc_temp_config_t mc_temp_config;
 
 // Forward declarations
 static esp_err_t can_transmit_eid(uint32_t eid, const uint8_t *data, uint8_t len);
@@ -521,10 +522,38 @@ void bldc_interface_can_get_appconf(void) {
     bldc_interface_can_send_command(&cmd, 1);
 }
 
-// Wrapper for bldc_interface to send packets via CAN
-// Note: Function signature matches bldc_interface_init requirements
 void bldc_interface_can_send_packet(unsigned char *data, unsigned int len) {
     bldc_interface_can_send_command((uint8_t *)data, (uint16_t)len);
+}
+
+static void process_response_packet(unsigned char *data, unsigned int len) {
+    if (!len) return;
+
+    int32_t ind = 0;
+    unsigned char id = data[0];
+    data++;
+    len--;
+
+    switch (id) {
+    case COMM_GET_MCCONF_TEMP: {
+        if (len < 49) {
+            ESP_LOGW(TAG, "MCCONF_TEMP packet too short (%d)", (int)len);
+            break;
+        }
+        for (int i = 0; i < 10; i++) {
+            buffer_get_float32_auto(data, &ind);
+        }
+        mc_temp_config.motor_poles    = data[ind++];
+        mc_temp_config.gear_ratio     = buffer_get_float32_auto(data, &ind);
+        mc_temp_config.wheel_diameter = buffer_get_float32_auto(data, &ind);
+        mc_temp_config.valid          = true;
+        if (rx_mcconf_temp_func) {
+            rx_mcconf_temp_func(&mc_temp_config);
+        }
+    } break;
+    default:
+        break;
+    }
 }
 
 // Callback setters
@@ -641,7 +670,7 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
 
                 // Process the response packet (skip sender_id and send_type)
                 if (len > 2) {
-                    bldc_interface_process_packet(data + 2, len - 2);
+                    process_response_packet(data + 2, len - 2);
                 }
             }
             break;
@@ -728,7 +757,7 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
                 if (calculated_crc == expected_crc) {
                     ESP_LOGD(TAG, "Multi-frame response complete: len=%d from ID=%d",
                              expected_len, controller_id);
-                    bldc_interface_process_packet(buf->data, expected_len);
+                    process_response_packet(buf->data, expected_len);
                 } else {
                     ESP_LOGW(TAG, "CRC mismatch ID=%d: expected=0x%04X calculated=0x%04X",
                              controller_id, expected_crc, calculated_crc);
