@@ -10,7 +10,6 @@
 #include "throttle.h"
 #include "led.h"
 #include "bms.h"
-#include "bldc_interface.h"
 #include "bldc_interface_can.h"
 #include "aux_output.h"
 #include "usb_serial.h"
@@ -24,9 +23,6 @@ static mc_temp_config_t stored_mc_temp_conf = {0};
 mc_temp_config_t* get_stored_mc_temp_config(void);
 
 static void bldc_values_received(mc_values *values) {
-    // Merge: avoid overwriting valid voltage with 0 from partial STATUS updates.
-    // STATUS 1/2/3/4 don't include v_in, so accumulated_values.v_in stays 0 until
-    // STATUS 5 arrives - full overwrite would cause 0V/25.8V cycling on receiver page.
     if (values->v_in > 0 || stored_values.v_in == 0) {
         stored_values.v_in = values->v_in;
     }
@@ -67,10 +63,6 @@ static void vesc_task(void *pvParameters) {
 
     while (1) {
         bldc_interface_can_get_values();
-
-        // Periodically check if motor config is valid, and retry if not
-        // Only request when BLE is connected to avoid unnecessary requests
-        // This ensures config is available even if initial request failed or VESC was not ready
         config_retry_counter++;
         if (config_retry_counter >= CONFIG_RETRY_INTERVAL) {
             config_retry_counter = 0;
@@ -141,11 +133,6 @@ void app_main(void) {
     bldc_interface_can_init(CAN_TX_PIN, CAN_RX_PIN);
     bldc_interface_can_set_rx_value_func(bldc_values_received);
     bldc_interface_can_set_rx_mcconf_temp_func(mcconf_temp_received);
-
-    // Make bldc_interface use CAN for sending packets (for throttle, etc.)
-    bldc_interface_init(bldc_interface_can_send_packet);
-    bldc_interface_set_rx_value_func(bldc_values_received);
-    bldc_interface_set_rx_mcconf_temp_func(mcconf_temp_received);
 
     // MC config will be requested when BLE connects (see ble.c ESP_GATTS_CONNECT_EVT)
 

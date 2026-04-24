@@ -5,7 +5,7 @@
 #include "freertos/timers.h"
 #include <stdio.h>
 #include <stdatomic.h>
-#include "bldc_interface.h"
+#include "bldc_interface_can.h"
 #include "hw_config.h"
 #include "led.h"
 #include "aux_output.h"
@@ -118,7 +118,7 @@ static void send_nunchuck_throttle(void *pvParameters) {
         buffer[ind++] = 0;                    // extension data
 
         // Send the packet
-        bldc_interface_send_packet(buffer, ind);
+        bldc_interface_can_send_packet(buffer, ind);
 
         // Delay before next update
         vTaskDelay(pdMS_TO_TICKS(20));  // 5ms delay for smooth ramping
