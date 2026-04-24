@@ -349,7 +349,6 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
         break;
 
     case ESP_GAP_BLE_PASSKEY_NOTIF_EVT:
-                param->ble_security.key_notif.passkey);
         break;
 
     case ESP_GAP_BLE_AUTH_CMPL_EVT:
