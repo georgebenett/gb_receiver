@@ -76,7 +76,6 @@ static const uint8_t spp_adv_data[23] = {
 static uint16_t spp_mtu_size = 23;
 static uint16_t spp_conn_id = 0xffff;
 static esp_gatt_if_t spp_gatts_if = 0xff;
-static QueueHandle_t cmd_cmd_queue = NULL;
 static bool enable_data_ntf = false;
 static bool is_connected = false;
 static bool is_authenticated = false;  // Connection is encrypted/authenticated
@@ -321,25 +320,6 @@ static void stop_prefer_paired_window(void)
     }
 }
 
-void spp_cmd_task(void * arg)
-{
-    uint8_t * cmd_id;
-
-    for(;;){
-        vTaskDelay(50 / portTICK_PERIOD_MS);
-        if(xQueueReceive(cmd_cmd_queue, &cmd_id, portMAX_DELAY)) {
-            ESP_LOG_BUFFER_CHAR(GATTS_TABLE_TAG,(char *)(cmd_id),strlen((char *)cmd_id));
-            free(cmd_id);
-        }
-    }
-    vTaskDelete(NULL);
-}
-
-static void spp_task_init(void)
-{
-    cmd_cmd_queue = xQueueCreate(10, sizeof(uint32_t));
-    xTaskCreate(spp_cmd_task, "spp_cmd_task", 2048, NULL, 10, NULL);
-}
 
 static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
 {
@@ -369,8 +349,6 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
         break;
 
     case ESP_GAP_BLE_PASSKEY_NOTIF_EVT:
-        // Server displays passkey (not used since we use fixed passkey)
-        ESP_LOGI(GATTS_TABLE_TAG, "ESP_GAP_BLE_PASSKEY_NOTIF_EVT - passkey: %06" PRIu32,
                 param->ble_security.key_notif.passkey);
         break;
 
@@ -436,6 +414,9 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     	    res = find_char_and_desr_index(p_data->write.handle);
             if(p_data->write.is_prep == false){
                 if(res == SPP_IDX_SPP_DATA_NTF_CFG){
+                    if (p_data->write.len < 2) {
+                        break;
+                    }
                     uint16_t descr_value = p_data->write.value[1]<<8 | p_data->write.value[0];
                     if (descr_value == 0x0001) {
                         enable_data_ntf = true;
@@ -447,6 +428,11 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                 // SECURITY CHECK: Only accept throttle commands from authenticated connections
                 if (!is_authenticated) {
                     ESP_LOGW(GATTS_TABLE_TAG, "Rejecting write from unauthenticated client!");
+                    break;
+                }
+
+                if (p_data->write.len < 3) {
+                    ESP_LOGW(GATTS_TABLE_TAG, "Throttle write too short: %d bytes", p_data->write.len);
                     break;
                 }
 
@@ -618,9 +604,6 @@ esp_err_t ble_spp_server_start(void)
 
     // Create task to handle prefer-paired timer expiry (avoids BLE API calls from timer context)
     xTaskCreate(prefer_paired_task, "prefer_paired", 2048, NULL, 5, &prefer_paired_task_handle);
-
-    // Initialize SPP tasks
-    spp_task_init();
 
     // Set local MTU
     ret = esp_ble_gatt_set_local_mtu(500);

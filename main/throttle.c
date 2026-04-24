@@ -121,7 +121,7 @@ static void send_nunchuck_throttle(void *pvParameters) {
         bldc_interface_can_send_packet(buffer, ind);
 
         // Delay before next update
-        vTaskDelay(pdMS_TO_TICKS(20));  // 5ms delay for smooth ramping
+        vTaskDelay(pdMS_TO_TICKS(20));  // 20ms = 50 Hz
     }
 }
 

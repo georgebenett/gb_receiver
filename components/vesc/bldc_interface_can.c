@@ -38,7 +38,6 @@ static detected_vesc_t detected_vescs[MAX_DETECTED_VESCS] = {0};
 static uint8_t primary_vesc_id = 0;
 static bool primary_vesc_detected = false;
 static uint8_t num_detected_vescs = 0;
-static bool vesc_detection_logged = false;
 
 // Callbacks
 static void(*rx_value_func)(mc_values *values) = NULL;
@@ -147,7 +146,6 @@ void bldc_interface_can_init(gpio_num_t tx_pin, gpio_num_t rx_pin) {
     primary_vesc_id = 0;
     primary_vesc_detected = false;
     num_detected_vescs = 0;
-    vesc_detection_logged = false;
     memset(detected_vescs, 0, sizeof(detected_vescs));
 
     // Reset fault state

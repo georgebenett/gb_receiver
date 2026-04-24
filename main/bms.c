@@ -39,7 +39,7 @@ static bool is_valid_bms_response(const uint8_t *data, size_t len) {
     uint16_t sum = 0;
     for (size_t i = 2; i < 4 + (size_t)data_len; i++) sum += data[i];
     uint16_t expected = ~sum + 1;
-    uint16_t got = (data[len - 2] << 8) | data[len - 1];
+    uint16_t got = ((uint16_t)data[len - 3] << 8) | data[len - 2];
     return (expected == got);
 }
 
@@ -210,31 +210,42 @@ static void bms_read_task(void *pvParameters) {
 
     while (1) {
         // Read basic info
+        bool basic_ok = false;
         if (bms_read_basic_info(response, &response_len) == ESP_OK) {
-            print_bms_values(response, response_len);
-            consecutive_failures = 0;
-            is_connected = true;
+            if (is_valid_bms_response(response, response_len)) {
+                print_bms_values(response, response_len);
+                consecutive_failures = 0;
+                is_connected = true;
+                basic_ok = true;
+            } else {
+                ESP_LOGW(TAG, "Basic info: invalid frame (checksum/length mismatch)");
+                consecutive_failures++;
+            }
         } else {
             consecutive_failures++;
+        }
+
+        if (!basic_ok) {
             if (consecutive_failures >= MAX_FAILURES) {
                 if (is_connected) {
                     ESP_LOGW(TAG, "BMS disconnected");
                     is_connected = false;
-                    // Clear BMS values when disconnected
                     memset(&stored_bms_values, 0, sizeof(bms_values_t));
                 }
-                // When disconnected, slow down the retry rate significantly
-                vTaskDelay(pdMS_TO_TICKS(1000)); // 1 second between retries
-                continue; // Skip other commands when disconnected
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                continue;
             }
         }
 
         if (is_connected) {
             vTaskDelay(pdMS_TO_TICKS(50));
 
-            // Only try other commands if connected
             if (bms_read_cell_voltages(response, &response_len) == ESP_OK) {
-                print_bms_values(response, response_len);
+                if (is_valid_bms_response(response, response_len)) {
+                    print_bms_values(response, response_len);
+                } else {
+                    ESP_LOGW(TAG, "Cell voltages: invalid frame (checksum/length mismatch)");
+                }
             }
 
             vTaskDelay(pdMS_TO_TICKS(50));
