@@ -52,6 +52,7 @@ extern mc_temp_config_t* get_stored_mc_temp_config(void);
 
 // BLE Security Configuration
 #define BLE_PASSKEY                 483265  // Fixed passkey for pairing
+#define BLE_CMD_RESET_ODOMETER      0x01   // Command: reset trip odometer
 
 
 static const uint16_t spp_service_uuid = 0xABF0;
@@ -424,24 +425,37 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                     }
                 }
 
-                // SECURITY CHECK: Only accept throttle commands from authenticated connections
+                // SECURITY CHECK: Only accept commands from authenticated connections
                 if (!is_authenticated) {
                     ESP_LOGW(GATTS_TABLE_TAG, "Rejecting write from unauthenticated client!");
                     break;
                 }
 
-                if (p_data->write.len < 3) {
-                    ESP_LOGW(GATTS_TABLE_TAG, "Throttle write too short: %d bytes", p_data->write.len);
-                    break;
+                if (res == SPP_IDX_SPP_DATA_RECV_VAL) {
+                    if (p_data->write.len < 3) {
+                        ESP_LOGW(GATTS_TABLE_TAG, "Throttle write too short: %d bytes", p_data->write.len);
+                        break;
+                    }
+                    uint16_t adc_value = (uint16_t)p_data->write.value[0] |
+                                               ((uint16_t)p_data->write.value[1] << 8);
+                    uint8_t aux_output_state = p_data->write.value[2];
+                    throttle_update_value(adc_value);
+                    throttle_reset_timeout();
+                    aux_output_set(aux_output_state);
+                } else if (res == SPP_IDX_SPP_COMMAND_VAL) {
+                    if (p_data->write.len < 1) {
+                        break;
+                    }
+                    uint8_t cmd = p_data->write.value[0];
+                    if (cmd == BLE_CMD_RESET_ODOMETER) {
+                        ble_reset_trip_distance();
+                        uint8_t ack[2] = {BLE_CMD_RESET_ODOMETER, 0x00};
+                        esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id,
+                            spp_handle_table[SPP_IDX_SPP_STATUS_VAL],
+                            sizeof(ack), ack, false);
+                        ESP_LOGI(GATTS_TABLE_TAG, "Odometer reset via BLE command");
+                    }
                 }
-
-                uint16_t adc_value = (uint16_t)p_data->write.value[0] |  // Low byte
-                                           ((uint16_t)p_data->write.value[1] << 8);  // High byte
-                uint8_t aux_output_state = p_data->write.value[2]; // Aux output state
-
-                throttle_update_value(adc_value);
-                throttle_reset_timeout();
-                aux_output_set(aux_output_state);
             }
       	 	break;
     	}
