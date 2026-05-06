@@ -23,7 +23,7 @@ static mc_temp_config_t stored_mc_temp_conf = {0};
 mc_temp_config_t* get_stored_mc_temp_config(void);
 
 static void bldc_values_received(mc_values *values) {
-    if (values->v_in > 0 || stored_values.v_in == 0) {
+    if (values->v_in > 1.0f) {
         stored_values.v_in = values->v_in;
     }
     stored_values.temp_mos = values->temp_mos;

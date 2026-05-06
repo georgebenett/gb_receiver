@@ -42,8 +42,10 @@ enum{
 #define BLE_PAIRED_REMOTE_NVS_KEY_MAC   "remote_mac"
 #define BLE_PAIRED_REMOTE_NVS_KEY_VALID "mac_valid"
 
-// How long to prefer the previously paired remote on boot before opening to all
-#define BLE_PREFER_PAIRED_MS 15000  // 15 seconds
+// Window 1: paired MAC only
+#define BLE_WINDOW_PAIRED_MS 10000  // 10 seconds
+// Window 2: open to any remote (after window 1 expires)
+#define BLE_WINDOW_OPEN_MS   10000  // 10 seconds
 
 // Initialize the BLE SPP server
 esp_err_t ble_spp_server_init(void);

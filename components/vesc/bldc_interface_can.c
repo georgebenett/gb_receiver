@@ -533,6 +533,26 @@ static void process_response_packet(unsigned char *data, unsigned int len) {
     len--;
 
     switch (id) {
+    case COMM_GET_VALUES: {
+        // Minimum bytes to reach v_in: temp_mos(2)+temp_motor(2)+current_motor(4)+
+        // current_in(4)+id(4)+iq(4)+duty_now(2)+rpm(4)+v_in(2) = 28
+        if (len < 28) break;
+        int32_t ind = 0;
+        ind += 2; // temp_mos
+        ind += 2; // temp_motor
+        ind += 4; // current_motor
+        ind += 4; // current_in
+        ind += 4; // id
+        ind += 4; // iq
+        ind += 2; // duty_now
+        ind += 4; // rpm
+        float v_in = (float)buffer_get_int16(data, &ind) / 10.0f;
+        if (v_in > 0.1f) {
+            accumulated_values.v_in = v_in;
+            status_5_received = true;
+            update_and_notify_values();
+        }
+    } break;
     case COMM_GET_MCCONF_TEMP: {
         if (len < 49) {
             ESP_LOGW(TAG, "MCCONF_TEMP packet too short (%d)", (int)len);
@@ -843,7 +863,10 @@ static void process_status_5_message(uint8_t id, uint8_t *data, uint8_t len) {
     int32_t ind = 0;
 
     accumulated_values.tachometer = buffer_get_int32(data, &ind);
-    accumulated_values.v_in = (float)buffer_get_int16(data, &ind) / 10.0;
+    float new_v_in = (float)buffer_get_int16(data, &ind) / 10.0;
+    if (new_v_in > 1.0f) {
+        accumulated_values.v_in = new_v_in;
+    }
     accumulated_values.vesc_id = id;
     status_5_received = true;
 
