@@ -3,6 +3,7 @@ idf_component_register(
         "main.c"
         "ble.c"
         "throttle.c"
+        "failsafe.c"
         "led.c"
         "bms.c"
         "aux_output.c"

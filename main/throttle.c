@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdatomic.h>
 #include "bldc_interface_can.h"
+#include "failsafe.h"
 #include "hw_config.h"
 #include "led.h"
 #include "aux_output.h"
@@ -13,6 +14,7 @@
 #define THROTTLE_TAG "THROTTLE"
 
 static _Atomic uint16_t current_throttle_value = THROTTLE_NEUTRAL_VALUE;
+static bool throttle_packet_received = false;
 
 uint16_t throttle_get_value(void) {
     return atomic_load(&current_throttle_value);
@@ -51,10 +53,19 @@ esp_err_t throttle_init(void)
 
 void throttle_update_value(uint16_t value)
 {
+    // Attempt to clear an active failsafe when the remote link is restored.
+    // failsafe_try_clear() enforces its own speed guard — it is a no-op while moving.
+    throttle_packet_received = true;
+
+    if (failsafe_is_active()) {
+        failsafe_try_clear();
+        return;  // Discard the throttle value until failsafe is resolved
+    }
+
     atomic_store(&current_throttle_value, value);
-    throttle_reset_timeout();  // Reset the timeout timer
-    led_set_connection_state(true);  // Set LED to connected state on packet reception
-    aux_output_update_pwm();  // Update aux output LED PWM with new throttle value
+    throttle_reset_timeout();
+    led_set_connection_state(true);
+    aux_output_update_pwm();
     ESP_LOGD(THROTTLE_TAG, "%d", value);
 }
 
@@ -66,7 +77,12 @@ void throttle_reset_value(void)
 void throttle_timeout_callback(TimerHandle_t xTimer)
 {
     throttle_reset_value();
-    led_set_connection_state(false);  // Set LED to disconnected state on timeout
+    led_set_connection_state(false);
+    // Only trigger failsafe if at least one packet was received — avoids a
+    // spurious trigger on boot before the remote has had time to connect.
+    if (throttle_packet_received) {
+        failsafe_trigger(FAILSAFE_REASON_THROTTLE_TIMEOUT);
+    }
 }
 
 void throttle_reset_timeout(void)
@@ -98,6 +114,7 @@ void throttle_stop_timeout_monitor(void)
             ESP_LOGE(THROTTLE_TAG, "Failed to stop throttle timeout timer");
         } else {
             timeout_monitoring_active = false;
+            throttle_packet_received = false;  // Reset so next connect needs a real packet first
             ESP_LOGI(THROTTLE_TAG, "Throttle timeout monitoring stopped");
         }
     }
@@ -106,22 +123,23 @@ void throttle_stop_timeout_monitor(void)
 static void send_nunchuck_throttle(void *pvParameters) {
 
     while (1) {
-        uint8_t y_value = (uint8_t)throttle_get_value();
-        // Create packet for nunchuck data
-        uint8_t buffer[5];
-        int32_t ind = 0;
+        // Do not inject throttle while failsafe is active — failsafe task owns the motors
+        if (!failsafe_is_active()) {
+            uint8_t y_value = (uint8_t)throttle_get_value();
+            uint8_t buffer[5];
+            int32_t ind = 0;
 
-        buffer[ind++] = COMM_SET_CHUCK_DATA;  // Command ID
-        buffer[ind++] = 128;                  // x-axis centered
-        buffer[ind++] = y_value;              // y-axis variable
-        buffer[ind++] = 0;                    // buttons released
-        buffer[ind++] = 0;                    // extension data
+            buffer[ind++] = COMM_SET_CHUCK_DATA;
+            buffer[ind++] = 128;     // x-axis centered
+            buffer[ind++] = y_value; // y-axis
+            buffer[ind++] = 0;       // buttons released
+            buffer[ind++] = 0;       // extension data
 
-        // Send the packet
-        bldc_interface_can_send_packet(buffer, ind);
+            // Send to every detected VESC independently — no CAN forwarding assumed
+            bldc_interface_can_send_to_all(buffer, ind);
+        }
 
-        // Delay before next update
-        vTaskDelay(pdMS_TO_TICKS(20));  // 20ms = 50 Hz
+        vTaskDelay(pdMS_TO_TICKS(20));  // 50 Hz
     }
 }
 

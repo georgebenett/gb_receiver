@@ -8,6 +8,7 @@
 #include "hw_config.h"
 #include "ble.h"
 #include "throttle.h"
+#include "failsafe.h"
 #include "led.h"
 #include "bms.h"
 #include "bldc_interface_can.h"
@@ -131,6 +132,10 @@ void app_main(void) {
 
     // Initialize CAN interface for VESC communication
     bldc_interface_can_init(CAN_TX_PIN, CAN_RX_PIN);
+
+    // Failsafe must be initialized after CAN so the dropout callback is registered
+    // before the first RX task iteration runs
+    failsafe_init();
     bldc_interface_can_set_rx_value_func(bldc_values_received);
     bldc_interface_can_set_rx_mcconf_temp_func(mcconf_temp_received);
 
