@@ -19,8 +19,8 @@ static const char *TAG = "FAILSAFE";
 // letting VESC's own ramp_time_neg smooth the actual current — avoiding the
 // non-linear cliff of SET_CURRENT_BRAKE_REL.
 #define BRAKE_Y_NEUTRAL          128
-#define BRAKE_Y_FINAL            90     // moderate braking; tune down for harder stop
-#define BRAKE_RAMP_DURATION_MS   10000  // 10 s ramp
+#define BRAKE_Y_FINAL            118    // gentle braking; tune toward 128 for softer, toward 0 for harder
+#define BRAKE_RAMP_DURATION_MS   15000  // 15 s ramp
 #define BRAKE_RAMP_STEP_MS       50
 
 // CAN fault is polled on this interval inside the failsafe task.

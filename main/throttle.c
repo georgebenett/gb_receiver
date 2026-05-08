@@ -58,7 +58,9 @@ void throttle_update_value(uint16_t value)
     throttle_packet_received = true;
 
     if (failsafe_is_active()) {
-        failsafe_try_clear();
+        if (failsafe_try_clear()) {
+            throttle_reset_timeout();  // prevent auto-reload timer from immediately re-triggering
+        }
         return;  // Discard the throttle value until failsafe is resolved
     }
 
