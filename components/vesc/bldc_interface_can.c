@@ -32,6 +32,8 @@ typedef struct {
     uint8_t id;
     uint32_t last_seen_ms;
     bool active;
+    int32_t erpm;               // Last known ERPM from STATUS packet
+    uint32_t erpm_timestamp_ms; // When erpm was last updated
 } detected_vesc_t;
 
 static detected_vesc_t detected_vescs[MAX_DETECTED_VESCS] = {0};
@@ -42,6 +44,7 @@ static uint8_t num_detected_vescs = 0;
 // Callbacks
 static void(*rx_value_func)(mc_values *values) = NULL;
 static void(*rx_mcconf_temp_func)(mc_temp_config_t *conf) = NULL;
+static void(*vesc_dropout_func)(uint8_t id) = NULL;
 
 static mc_temp_config_t mc_temp_config;
 
@@ -55,6 +58,7 @@ static void process_status_5_message(uint8_t id, uint8_t *data, uint8_t len);
 static void update_and_notify_values(void);
 static void detect_vesc_id(uint8_t id);
 static uint8_t get_primary_vesc_id(void);
+static void send_command_to_id(uint8_t vesc_id, uint8_t *data, uint16_t len);
 
 // Maximum plausible ERPM for any supported vehicle.
 // During VESC motor detection the VESC broadcasts STATUS packets with
@@ -428,68 +432,112 @@ void bldc_interface_can_set_handbrake_rel(float current_rel) {
     can_transmit_eid(eid, buffer, 4);
 }
 
-// Multi-frame command transmission
-void bldc_interface_can_send_command(uint8_t *data, uint16_t len) {
-    uint8_t vesc_id = get_primary_vesc_id();
-    if (!primary_vesc_detected) {
-        return;
-    }
-
+// Internal: send a command to a specific VESC ID (single or multi-frame as needed)
+static void send_command_to_id(uint8_t vesc_id, uint8_t *data, uint16_t len) {
     uint8_t send_buffer[8];
-    uint8_t controller_id = vesc_id;
 
     if (len <= 6) {
-        // Short buffer - single frame
         uint32_t ind = 0;
-        send_buffer[ind++] = controller_id;  // Sender ID
-        send_buffer[ind++] = 0;  // send = 0 (process packet)
+        send_buffer[ind++] = vesc_id;  // Sender ID
+        send_buffer[ind++] = 0;        // send = 0 (process packet)
         memcpy(send_buffer + ind, data, len);
         ind += len;
 
         uint32_t eid = vesc_id | ((uint32_t)CAN_PACKET_PROCESS_SHORT_BUFFER << 8);
         can_transmit_eid(eid, send_buffer, ind);
     } else {
-        // Long buffer - multi-frame
-        // Step 1: Fill buffer with fragments (first 255 bytes, 7 bytes per frame)
         uint16_t offset = 0;
         for (uint16_t i = 0; i < len && i < 255; i += 7) {
             uint8_t frag_len = (len - i < 7) ? (len - i) : 7;
-
-            send_buffer[0] = (uint8_t)(i & 0xFF);  // Offset (low byte)
+            send_buffer[0] = (uint8_t)(i & 0xFF);
             memcpy(send_buffer + 1, data + i, frag_len);
-
             uint32_t eid = vesc_id | ((uint32_t)CAN_PACKET_FILL_RX_BUFFER << 8);
             can_transmit_eid(eid, send_buffer, frag_len + 1);
-
             offset += frag_len;
         }
 
-        // Step 2: Continue with long frames (for offsets > 255, 6 bytes per frame)
         for (uint16_t i = offset; i < len; i += 6) {
             uint8_t frag_len = (len - i < 6) ? (len - i) : 6;
-
-            send_buffer[0] = (i >> 8) & 0xFF;  // Offset high byte
-            send_buffer[1] = i & 0xFF;         // Offset low byte
+            send_buffer[0] = (i >> 8) & 0xFF;
+            send_buffer[1] = i & 0xFF;
             memcpy(send_buffer + 2, data + i, frag_len);
-
             uint32_t eid = vesc_id | ((uint32_t)CAN_PACKET_FILL_RX_BUFFER_LONG << 8);
             can_transmit_eid(eid, send_buffer, frag_len + 2);
         }
 
-        // Step 3: Process buffer
         uint32_t ind = 0;
-        send_buffer[ind++] = controller_id;
-        send_buffer[ind++] = 0;  // send = 0
+        send_buffer[ind++] = vesc_id;
+        send_buffer[ind++] = 0;
         send_buffer[ind++] = (len >> 8) & 0xFF;
         send_buffer[ind++] = len & 0xFF;
-
         uint16_t crc = crc16(data, len);
         send_buffer[ind++] = (crc >> 8) & 0xFF;
         send_buffer[ind++] = crc & 0xFF;
-
         uint32_t eid = vesc_id | ((uint32_t)CAN_PACKET_PROCESS_RX_BUFFER << 8);
         can_transmit_eid(eid, send_buffer, ind);
     }
+}
+
+// Multi-frame command transmission — primary VESC only
+void bldc_interface_can_send_command(uint8_t *data, uint16_t len) {
+    if (!primary_vesc_detected) {
+        return;
+    }
+    send_command_to_id(get_primary_vesc_id(), data, len);
+}
+
+// Send command to every active VESC independently — never relies on CAN forwarding
+void bldc_interface_can_send_to_all(uint8_t *data, uint16_t len) {
+    for (int i = 0; i < num_detected_vescs; i++) {
+        if (detected_vescs[i].active) {
+            send_command_to_id(detected_vescs[i].id, data, len);
+        }
+    }
+}
+
+// Apply regenerative braking to every active VESC — used by failsafe path
+void bldc_interface_can_set_current_brake_rel_all(float current_rel) {
+    uint8_t buffer[4];
+    int32_t index = 0;
+    buffer_append_float32(buffer, current_rel, 1e5, &index);
+
+    for (int i = 0; i < num_detected_vescs; i++) {
+        if (detected_vescs[i].active) {
+            uint32_t eid = detected_vescs[i].id | ((uint32_t)CAN_PACKET_SET_CURRENT_BRAKE_REL << 8);
+            can_transmit_eid(eid, buffer, 4);
+        }
+    }
+}
+
+// Return the worst-case |ERPM| across all active VESCs — used to gate braking intensity
+int32_t bldc_interface_can_get_max_abs_erpm(void) {
+    int32_t max_erpm = 0;
+    uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+    for (int i = 0; i < num_detected_vescs; i++) {
+        if (!detected_vescs[i].active) continue;
+        // Treat stale readings as unknown — use last known value conservatively
+        if (now_ms - detected_vescs[i].erpm_timestamp_ms > VESC_DETECTION_TIMEOUT_MS) continue;
+        int32_t abs_erpm = detected_vescs[i].erpm < 0 ? -detected_vescs[i].erpm : detected_vescs[i].erpm;
+        if (abs_erpm > max_erpm) {
+            max_erpm = abs_erpm;
+        }
+    }
+    return max_erpm;
+}
+
+void bldc_interface_can_set_vesc_dropout_func(void(*func)(uint8_t id)) {
+    vesc_dropout_func = func;
+}
+
+int32_t bldc_interface_can_get_erpm_at(uint8_t index) {
+    if (index >= num_detected_vescs) return 0;
+    return detected_vescs[index].erpm;
+}
+
+uint8_t bldc_interface_can_get_id_at(uint8_t index) {
+    if (index >= num_detected_vescs) return 0;
+    return detected_vescs[index].id;
 }
 
 // Wrapper functions for complex commands
@@ -626,17 +674,14 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
 
     switch (cmd) {
         case CAN_PACKET_STATUS: {
-            // Decode status message (rpm, current_motor, duty_now)
-            // Only process if from primary VESC or if no primary yet
-            if (controller_id == get_primary_vesc_id() || !primary_vesc_detected) {
-                ESP_LOGD(TAG, "Status message received from ID=%d", controller_id);
-                process_status_message(controller_id, data, len);
-            }
+            // Process STATUS from every VESC — ERPM tracking is safety-critical for all motors.
+            // process_status_message guards accumulated_values updates to the primary VESC only.
+            ESP_LOGD(TAG, "Status message received from ID=%d", controller_id);
+            process_status_message(controller_id, data, len);
             break;
         }
 
         case CAN_PACKET_STATUS_2: {
-            // Decode status 2 message (amp_hours, amp_hours_charged)
             if (controller_id == get_primary_vesc_id() || !primary_vesc_detected) {
                 ESP_LOGD(TAG, "Status 2 message received from ID=%d", controller_id);
                 process_status_2_message(controller_id, data, len);
@@ -645,7 +690,6 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
         }
 
         case CAN_PACKET_STATUS_3: {
-            // Decode status 3 message (watt_hours, watt_hours_charged)
             if (controller_id == get_primary_vesc_id() || !primary_vesc_detected) {
                 ESP_LOGD(TAG, "Status 3 message received from ID=%d", controller_id);
                 process_status_3_message(controller_id, data, len);
@@ -654,7 +698,6 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
         }
 
         case CAN_PACKET_STATUS_4: {
-            // Decode status 4 message (temp_fet, temp_motor, current_in, pid_pos)
             if (controller_id == get_primary_vesc_id() || !primary_vesc_detected) {
                 ESP_LOGD(TAG, "Status 4 message received from ID=%d", controller_id);
                 process_status_4_message(controller_id, data, len);
@@ -663,7 +706,6 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
         }
 
         case CAN_PACKET_STATUS_5: {
-            // Decode status 5 message (tachometer, v_in)
             if (controller_id == get_primary_vesc_id() || !primary_vesc_detected) {
                 ESP_LOGD(TAG, "Status 5 message received from ID=%d", controller_id);
                 process_status_5_message(controller_id, data, len);
@@ -807,6 +849,21 @@ static void process_status_message(uint8_t id, uint8_t *data, uint8_t len) {
         raw_rpm = 0;
     }
 
+    // Always track ERPM per-VESC — required for failsafe speed assessment across all motors
+    uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+    for (int i = 0; i < num_detected_vescs; i++) {
+        if (detected_vescs[i].id == id) {
+            detected_vescs[i].erpm = raw_rpm;
+            detected_vescs[i].erpm_timestamp_ms = now_ms;
+            break;
+        }
+    }
+
+    // Only update accumulated_values (used for BLE telemetry) from the primary VESC
+    if (id != get_primary_vesc_id() && primary_vesc_detected) {
+        return;
+    }
+
     accumulated_values.rpm = (float)raw_rpm;
     accumulated_values.current_motor = (float)buffer_get_int16(data, &ind) / 10.0;
     accumulated_values.duty_now = (float)buffer_get_int16(data, &ind) / 1000.0;
@@ -891,6 +948,9 @@ static void check_vesc_activity(void) {
                 ESP_LOGW(TAG, "VESC ID=%d inactive (no STATUS messages for %" PRIu32 " ms)",
                          detected_vescs[i].id, time_since_last_seen);
                 detected_vescs[i].active = false;
+                if (vesc_dropout_func) {
+                    vesc_dropout_func(detected_vescs[i].id);
+                }
 
                 // If primary VESC went inactive, try to find another active one
                 if (detected_vescs[i].id == primary_vesc_id) {

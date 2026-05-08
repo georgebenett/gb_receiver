@@ -71,6 +71,18 @@ void bldc_interface_can_rx_task(void *pvParameters);
 uint8_t bldc_interface_can_get_primary_vesc_id(void);  // Returns 0 if no VESC detected
 uint8_t bldc_interface_can_get_detected_vesc_count(void);
 
+// Per-VESC speed tracking (safety-critical: tracks all VESCs, not just primary)
+int32_t bldc_interface_can_get_max_abs_erpm(void);       // Worst-case ERPM across all active VESCs
+int32_t bldc_interface_can_get_erpm_at(uint8_t index);   // ERPM for detected VESC slot [index]
+uint8_t bldc_interface_can_get_id_at(uint8_t index);     // VESC ID for detected slot [index]
+
+// Multi-VESC broadcast — sends to every active VESC independently (no CAN forwarding assumed)
+void bldc_interface_can_send_to_all(uint8_t *data, uint16_t len);
+void bldc_interface_can_set_current_brake_rel_all(float current_rel);
+
+// VESC dropout callback (fired when a previously-active VESC stops sending STATUS)
+void bldc_interface_can_set_vesc_dropout_func(void(*func)(uint8_t id));
+
 // CAN bus fault status (set after CAN_TX_FAULT_THRESHOLD consecutive transmit failures)
 bool bldc_interface_can_has_fault(void);
 void bldc_interface_can_clear_fault(void);
