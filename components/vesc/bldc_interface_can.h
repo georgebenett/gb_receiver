@@ -78,6 +78,7 @@ uint8_t bldc_interface_can_get_id_at(uint8_t index);     // VESC ID for detected
 
 // Multi-VESC broadcast — sends to every active VESC independently (no CAN forwarding assumed)
 void bldc_interface_can_send_to_all(uint8_t *data, uint16_t len);
+void bldc_interface_can_send_to_id(uint8_t vesc_id, uint8_t *data, uint16_t len);
 void bldc_interface_can_set_current_brake_rel_all(float current_rel);
 
 // VESC dropout callback (fired when a previously-active VESC stops sending STATUS)

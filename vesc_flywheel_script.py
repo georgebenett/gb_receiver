@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Drag-cancellation "frictionless flywheel" mode for a VESC.
 
@@ -24,7 +25,7 @@ BAUD = 115200
 # If the motor starts spinning on its own when the shaft is at rest, lower
 # I_STATIC or raise DEADBAND_ERPM.
 I_STATIC_A = 1.0              # Coulomb friction comp (amps), forward in dir of motion
-K_VISCOUS_A_PER_ERPM = 1e-4   # viscous friction comp (amps per ERPM)
+K_VISCOUS_A_PER_ERPM = 1.5e-4   # viscous friction comp (amps per ERPM)
 I_MAX_A = 6.0                 # safety clamp on commanded current
 DEADBAND_ERPM = 100           # below |rpm| this, command 0 (don't self-start)
 

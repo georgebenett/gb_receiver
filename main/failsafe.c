@@ -18,9 +18,10 @@ static const char *TAG = "FAILSAFE";
 // We ramp from neutral down to BRAKE_Y_FINAL over BRAKE_RAMP_DURATION_MS,
 // letting VESC's own ramp_time_neg smooth the actual current — avoiding the
 // non-linear cliff of SET_CURRENT_BRAKE_REL.
-#define BRAKE_Y_NEUTRAL          128
-#define BRAKE_Y_FINAL            118    // gentle braking; tune toward 128 for softer, toward 0 for harder
-#define BRAKE_RAMP_DURATION_MS   15000  // 15 s ramp
+#define BRAKE_Y_NEUTRAL          128    // hold value for stopped motors
+#define BRAKE_Y_START            109    // ramp begins here — observed VESC nunchuck deadband edge
+#define BRAKE_Y_FINAL            100    // tune toward 128 for softer, toward 0 for harder
+#define BRAKE_RAMP_DURATION_MS   10000  // reach full brake in 10 s
 #define BRAKE_RAMP_STEP_MS       50
 
 // CAN fault is polled on this interval inside the failsafe task.
@@ -84,38 +85,41 @@ static void failsafe_task(void *pvParameters) {
             } else {
                 float progress = (float)elapsed_ms / (float)BRAKE_RAMP_DURATION_MS;
                 if (progress > 1.0f) progress = 1.0f;
-                y_value = (uint8_t)(BRAKE_Y_NEUTRAL - (BRAKE_Y_NEUTRAL - BRAKE_Y_FINAL) * progress);
+                y_value = (uint8_t)(BRAKE_Y_START - (BRAKE_Y_START - BRAKE_Y_FINAL) * progress);
                 if (!ramp_done && elapsed_ms >= BRAKE_RAMP_DURATION_MS) {
                     ESP_LOGI(TAG, "Brake ramp complete — holding at y=%d", BRAKE_Y_FINAL);
                     ramp_done = true;
                 }
             }
 
-            // Send nunchuck command to every active VESC independently
-            uint8_t buf[5];
-            int32_t idx = 0;
-            buf[idx++] = COMM_SET_CHUCK_DATA;
-            buf[idx++] = 128;    // x-axis centered
-            buf[idx++] = y_value;
-            buf[idx++] = 0;      // buttons released
-            buf[idx++] = 0;      // extension data
-            bldc_interface_can_send_to_all(buf, idx);
-
-            // Log speed for every detected VESC individually — CSV: time_ms,chuck_y,vesc_id,erpm,speed_kmh
+            // Send per-VESC nunchuck command — stopped VESCs get neutral to avoid reverse drive
             mc_temp_config_t *mc = get_stored_mc_temp_config();
             uint8_t vesc_count = bldc_interface_can_get_detected_vesc_count();
             for (uint8_t v = 0; v < vesc_count; v++) {
-                uint8_t  vesc_id = bldc_interface_can_get_id_at(v);
-                int32_t  erpm    = bldc_interface_can_get_erpm_at(v);
-                int32_t  abs_erpm = erpm < 0 ? -erpm : erpm;
+                uint8_t vesc_id  = bldc_interface_can_get_id_at(v);
+                int32_t erpm     = bldc_interface_can_get_erpm_at(v);
+                // Only brake motors spinning forward. A stopped or reverse-spinning
+                // motor must get neutral — y < 128 is reverse throttle for negative ERPM.
+                uint8_t vesc_y = (erpm > ERPM_STOPPED_THRESHOLD) ? y_value : BRAKE_Y_NEUTRAL;
+
+                uint8_t buf[5];
+                int32_t idx = 0;
+                buf[idx++] = COMM_SET_CHUCK_DATA;
+                buf[idx++] = 128;
+                buf[idx++] = vesc_y;
+                buf[idx++] = 0;
+                buf[idx++] = 0;
+                bldc_interface_can_send_to_id(vesc_id, buf, idx);
+
                 float speed_kmh = 0.0f;
                 if (mc && mc->valid && mc->motor_poles > 0 && mc->gear_ratio > 0.0f && mc->wheel_diameter > 0.0f) {
+                    int32_t abs_erpm = erpm < 0 ? -erpm : erpm;
                     float mech_rpm  = (float)abs_erpm / (mc->motor_poles / 2.0f);
                     float wheel_rpm = mech_rpm / mc->gear_ratio;
                     speed_kmh = wheel_rpm * (float)M_PI * mc->wheel_diameter / 60.0f * 3.6f;
                 }
                 ESP_LOGI(TAG, "BRAKE_CURVE %"PRIu32",%d,%d,%"PRId32",%.2f",
-                         elapsed_ms, y_value, vesc_id, erpm, speed_kmh);
+                         elapsed_ms, vesc_y, vesc_id, erpm, speed_kmh);
             }
 
             vTaskDelay(pdMS_TO_TICKS(BRAKE_RAMP_STEP_MS));
