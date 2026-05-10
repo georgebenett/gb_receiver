@@ -10,18 +10,20 @@ extern mc_temp_config_t *get_stored_mc_temp_config(void);
 
 static const char *TAG = "FAILSAFE";
 
-// Vehicle is considered stopped below this ERPM — full brake applies immediately with no ramp.
-// Sized conservatively: ~30 RPM mechanical on a 7-pole motor = 210 ERPM.
+// Vehicle is considered stopped below this ERPM — gates failsafe clearing and
+// releases brake current once all motors are at rest.
 #define ERPM_STOPPED_THRESHOLD   300
 
-// Nunchuck Y-axis: 128 = neutral, 0 = full brake.
-// We ramp from neutral down to BRAKE_Y_FINAL over BRAKE_RAMP_DURATION_MS,
-// letting VESC's own ramp_time_neg smooth the actual current — avoiding the
-// non-linear cliff of SET_CURRENT_BRAKE_REL.
-#define BRAKE_Y_NEUTRAL          128    // hold value for stopped motors
-#define BRAKE_Y_START            109    // ramp begins here — observed VESC nunchuck deadband edge
-#define BRAKE_Y_FINAL            100    // tune toward 128 for softer, toward 0 for harder
-#define BRAKE_RAMP_DURATION_MS   10000  // reach full brake in 10 s
+// Failsafe braking uses CAN_PACKET_SET_CURRENT_BRAKE_REL — direct regen brake
+// current as a fraction of each VESC's configured |l_current_min|. This bypasses
+// the VESC nunchuck/app layer entirely, so the behavior is portable across
+// rider configs (deadband, ctrl_type, ramp_time_neg, smart-reverse, etc.).
+// The VESC applies brake current opposing actual rotation, so stopped motors
+// see zero current and reverse-spinning motors brake to rest naturally.
+// Brake force scales with the rider's own configured l_current_min limit.
+#define BRAKE_REL_START          0.0f
+#define BRAKE_REL_FINAL          0.3f    // tune toward 0.2 for softer, 0.6 for harder
+#define BRAKE_RAMP_DURATION_MS   10000   // reach full brake in 10 s
 #define BRAKE_RAMP_STEP_MS       50
 
 // CAN fault is polled on this interval inside the failsafe task.
@@ -71,45 +73,36 @@ static void failsafe_task(void *pvParameters) {
         while (failsafe_active) {
             uint32_t elapsed_ms = (xTaskGetTickCount() * portTICK_PERIOD_MS) - ramp_start_ms;
 
-            // Once all motors have stopped, hold neutral — do NOT continue sending a
-            // below-neutral nunchuck value because the VESC will interpret it as reverse
-            // drive once the motor is no longer spinning forward.
+            // Release brake once everything is at rest; otherwise ramp brake current.
             int32_t max_erpm = bldc_interface_can_get_max_abs_erpm();
-            uint8_t y_value;
+            float brake_rel;
             if (max_erpm < ERPM_STOPPED_THRESHOLD) {
-                y_value = BRAKE_Y_NEUTRAL;
+                brake_rel = 0.0f;
                 if (!ramp_done) {
-                    ESP_LOGI(TAG, "All VESCs stopped — holding neutral to prevent reverse");
+                    ESP_LOGI(TAG, "All VESCs stopped — releasing brake");
                     ramp_done = true;
                 }
             } else {
                 float progress = (float)elapsed_ms / (float)BRAKE_RAMP_DURATION_MS;
                 if (progress > 1.0f) progress = 1.0f;
-                y_value = (uint8_t)(BRAKE_Y_START - (BRAKE_Y_START - BRAKE_Y_FINAL) * progress);
+                brake_rel = BRAKE_REL_START + (BRAKE_REL_FINAL - BRAKE_REL_START) * progress;
                 if (!ramp_done && elapsed_ms >= BRAKE_RAMP_DURATION_MS) {
-                    ESP_LOGI(TAG, "Brake ramp complete — holding at y=%d", BRAKE_Y_FINAL);
+                    ESP_LOGI(TAG, "Brake ramp complete — holding at rel=%.2f", BRAKE_REL_FINAL);
                     ramp_done = true;
                 }
             }
 
-            // Send per-VESC nunchuck command — stopped VESCs get neutral to avoid reverse drive
+            // Apply regen brake to every active VESC. The VESC applies current
+            // opposing actual rotation, so this is direction-safe — no special
+            // handling needed for stopped or reverse-spinning motors.
+            bldc_interface_can_set_current_brake_rel_all(brake_rel);
+
+            // Per-VESC diagnostic log — CSV: time_ms,brake_rel,vesc_id,erpm,speed_kmh
             mc_temp_config_t *mc = get_stored_mc_temp_config();
             uint8_t vesc_count = bldc_interface_can_get_detected_vesc_count();
             for (uint8_t v = 0; v < vesc_count; v++) {
-                uint8_t vesc_id  = bldc_interface_can_get_id_at(v);
-                int32_t erpm     = bldc_interface_can_get_erpm_at(v);
-                // Only brake motors spinning forward. A stopped or reverse-spinning
-                // motor must get neutral — y < 128 is reverse throttle for negative ERPM.
-                uint8_t vesc_y = (erpm > ERPM_STOPPED_THRESHOLD) ? y_value : BRAKE_Y_NEUTRAL;
-
-                uint8_t buf[5];
-                int32_t idx = 0;
-                buf[idx++] = COMM_SET_CHUCK_DATA;
-                buf[idx++] = 128;
-                buf[idx++] = vesc_y;
-                buf[idx++] = 0;
-                buf[idx++] = 0;
-                bldc_interface_can_send_to_id(vesc_id, buf, idx);
+                uint8_t vesc_id = bldc_interface_can_get_id_at(v);
+                int32_t erpm    = bldc_interface_can_get_erpm_at(v);
 
                 float speed_kmh = 0.0f;
                 if (mc && mc->valid && mc->motor_poles > 0 && mc->gear_ratio > 0.0f && mc->wheel_diameter > 0.0f) {
@@ -118,8 +111,8 @@ static void failsafe_task(void *pvParameters) {
                     float wheel_rpm = mech_rpm / mc->gear_ratio;
                     speed_kmh = wheel_rpm * (float)M_PI * mc->wheel_diameter / 60.0f * 3.6f;
                 }
-                ESP_LOGI(TAG, "BRAKE_CURVE %"PRIu32",%d,%d,%"PRId32",%.2f",
-                         elapsed_ms, vesc_y, vesc_id, erpm, speed_kmh);
+                ESP_LOGI(TAG, "BRAKE_CURVE %"PRIu32",%.3f,%d,%"PRId32",%.2f",
+                         elapsed_ms, brake_rel, vesc_id, erpm, speed_kmh);
             }
 
             vTaskDelay(pdMS_TO_TICKS(BRAKE_RAMP_STEP_MS));
