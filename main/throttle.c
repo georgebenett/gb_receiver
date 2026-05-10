@@ -24,13 +24,11 @@ static TimerHandle_t throttle_timeout_timer = NULL;
 static bool timeout_monitoring_active = false;
 
 static void throttle_timeout_callback(TimerHandle_t xTimer);
-static void send_nunchuck_throttle(void *pvParameters);
+static void send_throttle_task(void *pvParameters);
 
 esp_err_t throttle_init(void)
 {
-    // Create task for nunchuck testing
-    // Increased stack size from 2048 to 4096 to prevent stack overflow
-    xTaskCreate(send_nunchuck_throttle, "nunchuck_test", 4096, NULL, 5, NULL);
+    xTaskCreate(send_throttle_task, "throttle", 4096, NULL, 5, NULL);
 
     ESP_LOGI(THROTTLE_TAG, "Throttle initialized");
 
@@ -122,23 +120,52 @@ void throttle_stop_timeout_monitor(void)
     }
 }
 
-static void send_nunchuck_throttle(void *pvParameters) {
+// ERPM below this magnitude is treated as "essentially stopped" for the purpose
+// of brake-vs-reverse transition. ~1 km/h on a typical esk8 setup.
+#define THROTTLE_STOPPED_ERPM   300
 
+// Map a 0..255 throttle byte to the appropriate VESC command using smart-reverse logic:
+//   - Above neutral while moving reverse → brake (regen against reverse motion)
+//   - Above neutral while stopped or moving forward → drive forward (SET_CURRENT_REL +)
+//   - Below neutral while moving forward → brake (regen against forward motion)
+//   - Below neutral while stopped or moving reverse → drive reverse (SET_CURRENT_REL -)
+// This matches VESC "smart reverse" nunchuck behavior but lives in receiver firmware,
+// so it works the same regardless of the rider's VESC app config. All commands scale
+// against each VESC's own |l_current_max| / |l_current_min|.
+static void send_throttle_task(void *pvParameters) {
     while (1) {
-        // Do not inject throttle while failsafe is active — failsafe task owns the motors
+        // Failsafe task owns the motors while active — do not inject throttle.
         if (!failsafe_is_active()) {
-            uint8_t y_value = (uint8_t)throttle_get_value();
-            uint8_t buffer[5];
-            int32_t ind = 0;
+            uint16_t raw = throttle_get_value();
+            uint8_t value = (raw > 255) ? 255 : (uint8_t)raw;
 
-            buffer[ind++] = COMM_SET_CHUCK_DATA;
-            buffer[ind++] = 128;     // x-axis centered
-            buffer[ind++] = y_value; // y-axis
-            buffer[ind++] = 0;       // buttons released
-            buffer[ind++] = 0;       // extension data
+            if (value == THROTTLE_NEUTRAL_VALUE) {
+                bldc_interface_can_set_current_rel_all(0.0f);
+            } else {
+                int32_t erpm = bldc_interface_can_get_signed_dominant_erpm();
 
-            // Send to every detected VESC independently — no CAN forwarding assumed
-            bldc_interface_can_send_to_all(buffer, ind);
+                if (value > THROTTLE_NEUTRAL_VALUE) {
+                    float magnitude = (float)(value - THROTTLE_NEUTRAL_VALUE) /
+                                      (float)(255 - THROTTLE_NEUTRAL_VALUE);
+                    if (erpm < -THROTTLE_STOPPED_ERPM) {
+                        // Moving reverse, rider wants forward — brake first.
+                        bldc_interface_can_set_current_brake_rel_all(magnitude);
+                    } else {
+                        // Stopped or already forward — drive forward.
+                        bldc_interface_can_set_current_rel_all(magnitude);
+                    }
+                } else {
+                    float magnitude = (float)(THROTTLE_NEUTRAL_VALUE - value) /
+                                      (float)THROTTLE_NEUTRAL_VALUE;
+                    if (erpm > THROTTLE_STOPPED_ERPM) {
+                        // Moving forward, rider wants brake or reverse — brake first.
+                        bldc_interface_can_set_current_brake_rel_all(magnitude);
+                    } else {
+                        // Stopped or already reverse — drive reverse.
+                        bldc_interface_can_set_current_rel_all(-magnitude);
+                    }
+                }
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(20));  // 50 Hz

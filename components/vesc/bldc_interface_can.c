@@ -305,133 +305,6 @@ static void detect_vesc_id(uint8_t id) {
     }
 }
 
-// Simple commands (single frame)
-void bldc_interface_can_set_duty(float duty) {
-    uint8_t vesc_id = get_primary_vesc_id();
-    if (!primary_vesc_detected) {
-        return;
-    }
-
-    uint8_t buffer[4];
-    int32_t index = 0;
-    buffer_append_int32(buffer, (int32_t)(duty * 100000.0), &index);
-
-    uint32_t eid = vesc_id | ((uint32_t)CAN_PACKET_SET_DUTY << 8);
-    can_transmit_eid(eid, buffer, 4);
-}
-
-void bldc_interface_can_set_current(float current) {
-    uint8_t vesc_id = get_primary_vesc_id();
-    if (!primary_vesc_detected) {
-        return;
-    }
-
-    uint8_t buffer[4];
-    int32_t index = 0;
-    buffer_append_int32(buffer, (int32_t)(current * 1000.0), &index);
-
-    uint32_t eid = vesc_id | ((uint32_t)CAN_PACKET_SET_CURRENT << 8);
-    can_transmit_eid(eid, buffer, 4);
-}
-
-void bldc_interface_can_set_current_brake(float current) {
-    uint8_t vesc_id = get_primary_vesc_id();
-    if (!primary_vesc_detected) {
-        return;
-    }
-
-    uint8_t buffer[4];
-    int32_t index = 0;
-    buffer_append_int32(buffer, (int32_t)(current * 1000.0), &index);
-
-    uint32_t eid = vesc_id | ((uint32_t)CAN_PACKET_SET_CURRENT_BRAKE << 8);
-    can_transmit_eid(eid, buffer, 4);
-}
-
-void bldc_interface_can_set_rpm(float rpm) {
-    uint8_t vesc_id = get_primary_vesc_id();
-    if (!primary_vesc_detected) {
-        return;
-    }
-
-    uint8_t buffer[4];
-    int32_t index = 0;
-    buffer_append_int32(buffer, (int32_t)rpm, &index);
-
-    uint32_t eid = vesc_id | ((uint32_t)CAN_PACKET_SET_RPM << 8);
-    can_transmit_eid(eid, buffer, 4);
-}
-
-void bldc_interface_can_set_pos(float pos) {
-    uint8_t vesc_id = get_primary_vesc_id();
-    if (!primary_vesc_detected) {
-        return;
-    }
-
-    uint8_t buffer[4];
-    int32_t index = 0;
-    buffer_append_int32(buffer, (int32_t)(pos * 1000000.0), &index);
-
-    uint32_t eid = vesc_id | ((uint32_t)CAN_PACKET_SET_POS << 8);
-    can_transmit_eid(eid, buffer, 4);
-}
-
-void bldc_interface_can_set_current_rel(float current_rel) {
-    uint8_t vesc_id = get_primary_vesc_id();
-    if (!primary_vesc_detected) {
-        return;
-    }
-
-    uint8_t buffer[4];
-    int32_t index = 0;
-    buffer_append_float32(buffer, current_rel, 1e5, &index);
-
-    uint32_t eid = vesc_id | ((uint32_t)CAN_PACKET_SET_CURRENT_REL << 8);
-    can_transmit_eid(eid, buffer, 4);
-}
-
-void bldc_interface_can_set_current_brake_rel(float current_rel) {
-    uint8_t vesc_id = get_primary_vesc_id();
-    if (!primary_vesc_detected) {
-        return;
-    }
-
-    uint8_t buffer[4];
-    int32_t index = 0;
-    buffer_append_float32(buffer, current_rel, 1e5, &index);
-
-    uint32_t eid = vesc_id | ((uint32_t)CAN_PACKET_SET_CURRENT_BRAKE_REL << 8);
-    can_transmit_eid(eid, buffer, 4);
-}
-
-void bldc_interface_can_set_handbrake(float current) {
-    uint8_t vesc_id = get_primary_vesc_id();
-    if (!primary_vesc_detected) {
-        return;
-    }
-
-    uint8_t buffer[4];
-    int32_t index = 0;
-    buffer_append_float32(buffer, current, 1e3, &index);
-
-    uint32_t eid = vesc_id | ((uint32_t)CAN_PACKET_SET_CURRENT_HANDBRAKE << 8);
-    can_transmit_eid(eid, buffer, 4);
-}
-
-void bldc_interface_can_set_handbrake_rel(float current_rel) {
-    uint8_t vesc_id = get_primary_vesc_id();
-    if (!primary_vesc_detected) {
-        return;
-    }
-
-    uint8_t buffer[4];
-    int32_t index = 0;
-    buffer_append_float32(buffer, current_rel, 1e5, &index);
-
-    uint32_t eid = vesc_id | ((uint32_t)CAN_PACKET_SET_CURRENT_HANDBRAKE_REL << 8);
-    can_transmit_eid(eid, buffer, 4);
-}
-
 // Internal: send a command to a specific VESC ID (single or multi-frame as needed)
 static void send_command_to_id(uint8_t vesc_id, uint8_t *data, uint16_t len) {
     uint8_t send_buffer[8];
@@ -486,20 +359,22 @@ void bldc_interface_can_send_command(uint8_t *data, uint16_t len) {
     send_command_to_id(get_primary_vesc_id(), data, len);
 }
 
-// Send command to every active VESC independently — never relies on CAN forwarding
-void bldc_interface_can_send_to_all(uint8_t *data, uint16_t len) {
+// Apply forward drive current to every active VESC. Direct VESC API — bypasses
+// the nunchuck/ppm/adc app layer so behavior is independent of per-rider app config.
+void bldc_interface_can_set_current_rel_all(float current_rel) {
+    uint8_t buffer[4];
+    int32_t index = 0;
+    buffer_append_float32(buffer, current_rel, 1e5, &index);
+
     for (int i = 0; i < num_detected_vescs; i++) {
         if (detected_vescs[i].active) {
-            send_command_to_id(detected_vescs[i].id, data, len);
+            uint32_t eid = detected_vescs[i].id | ((uint32_t)CAN_PACKET_SET_CURRENT_REL << 8);
+            can_transmit_eid(eid, buffer, 4);
         }
     }
 }
 
-void bldc_interface_can_send_to_id(uint8_t vesc_id, uint8_t *data, uint16_t len) {
-    send_command_to_id(vesc_id, data, len);
-}
-
-// Apply regenerative braking to every active VESC — used by failsafe path
+// Apply regenerative braking to every active VESC.
 void bldc_interface_can_set_current_brake_rel_all(float current_rel) {
     uint8_t buffer[4];
     int32_t index = 0;
@@ -511,6 +386,13 @@ void bldc_interface_can_set_current_brake_rel_all(float current_rel) {
             can_transmit_eid(eid, buffer, 4);
         }
     }
+}
+
+// Force all motors into a known-quiescent state. Called once after CAN init so we
+// don't depend on whatever the VESC was doing before the receiver powered on.
+void bldc_interface_can_motors_safe_stop(void) {
+    bldc_interface_can_set_current_rel_all(0.0f);
+    bldc_interface_can_set_current_brake_rel_all(0.0f);
 }
 
 // Return the worst-case |ERPM| across all active VESCs — used to gate braking intensity
@@ -528,6 +410,26 @@ int32_t bldc_interface_can_get_max_abs_erpm(void) {
         }
     }
     return max_erpm;
+}
+
+// Return the signed ERPM of whichever active VESC has the largest magnitude.
+// Used by the throttle path to decide brake-vs-reverse-drive when input is below neutral.
+int32_t bldc_interface_can_get_signed_dominant_erpm(void) {
+    int32_t result = 0;
+    int32_t max_abs = 0;
+    uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+    for (int i = 0; i < num_detected_vescs; i++) {
+        if (!detected_vescs[i].active) continue;
+        if (now_ms - detected_vescs[i].erpm_timestamp_ms > VESC_DETECTION_TIMEOUT_MS) continue;
+        int32_t erpm = detected_vescs[i].erpm;
+        int32_t abs_erpm = erpm < 0 ? -erpm : erpm;
+        if (abs_erpm > max_abs) {
+            max_abs = abs_erpm;
+            result = erpm;
+        }
+    }
+    return result;
 }
 
 void bldc_interface_can_set_vesc_dropout_func(void(*func)(uint8_t id)) {
@@ -560,20 +462,6 @@ void bldc_interface_can_get_mcconf_temp(void) {
     uint8_t cmd = COMM_GET_MCCONF_TEMP;
     ESP_LOGI(TAG, "Requesting MC config from VESC ID=%d", vesc_id);
     bldc_interface_can_send_command(&cmd, 1);
-}
-
-void bldc_interface_can_get_mcconf(void) {
-    uint8_t cmd = COMM_GET_MCCONF;
-    bldc_interface_can_send_command(&cmd, 1);
-}
-
-void bldc_interface_can_get_appconf(void) {
-    uint8_t cmd = COMM_GET_APPCONF;
-    bldc_interface_can_send_command(&cmd, 1);
-}
-
-void bldc_interface_can_send_packet(unsigned char *data, unsigned int len) {
-    bldc_interface_can_send_command((uint8_t *)data, (uint16_t)len);
 }
 
 static void process_response_packet(unsigned char *data, unsigned int len) {

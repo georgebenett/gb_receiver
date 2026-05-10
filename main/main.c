@@ -128,16 +128,23 @@ void app_main(void) {
     // Start USB serial task
     usb_serial_start_task();
 
-    throttle_init();
-
     // Initialize CAN interface for VESC communication
     bldc_interface_can_init(CAN_TX_PIN, CAN_RX_PIN);
-
-    // Failsafe must be initialized after CAN so the dropout callback is registered
-    // before the first RX task iteration runs
-    failsafe_init();
     bldc_interface_can_set_rx_value_func(bldc_values_received);
     bldc_interface_can_set_rx_mcconf_temp_func(mcconf_temp_received);
+
+    // Drive motors into a known-quiescent state before anything that might
+    // command them starts running. Guards against the case where the receiver
+    // power-cycles while the VESCs are still alive and holding a previous command.
+    bldc_interface_can_motors_safe_stop();
+
+    // Failsafe must be initialized after CAN so the dropout callback is registered
+    // before the first RX task iteration runs.
+    failsafe_init();
+
+    // Throttle task runs last — by this point the failsafe is armed, CAN is up,
+    // and any first throttle command has a clean path through.
+    throttle_init();
 
     // MC config will be requested when BLE connects (see ble.c ESP_GATTS_CONNECT_EVT)
 
