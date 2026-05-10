@@ -5,9 +5,10 @@
 
 // Reasons a failsafe can be triggered — logged and queryable for diagnostics
 typedef enum {
-    FAILSAFE_REASON_THROTTLE_TIMEOUT = 0,  // Remote link lost
+    FAILSAFE_REASON_THROTTLE_TIMEOUT = 0,  // Remote link lost (no packets for THROTTLE_TIMEOUT_MS)
     FAILSAFE_REASON_CAN_FAULT,             // CAN bus hardware fault
     FAILSAFE_REASON_VESC_DROPOUT,          // Previously-active VESC stopped responding
+    FAILSAFE_REASON_BLE_DISCONNECT,        // BLE link explicitly dropped (GATTS_DISCONNECT_EVT)
     FAILSAFE_REASON_MANUAL,                // Explicitly requested (test/debug)
 } failsafe_reason_t;
 

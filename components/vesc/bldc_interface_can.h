@@ -40,25 +40,10 @@ typedef enum {
 void bldc_interface_can_init(gpio_num_t tx_pin, gpio_num_t rx_pin);
 void bldc_interface_can_deinit(void);
 
-// Simple commands (single frame)
-void bldc_interface_can_set_duty(float duty);
-void bldc_interface_can_set_current(float current);
-void bldc_interface_can_set_current_brake(float current);
-void bldc_interface_can_set_rpm(float rpm);
-void bldc_interface_can_set_pos(float pos);
-void bldc_interface_can_set_current_rel(float current_rel);
-void bldc_interface_can_set_current_brake_rel(float current_rel);
-void bldc_interface_can_set_handbrake(float current);
-void bldc_interface_can_set_handbrake_rel(float current_rel);
-
-// Complex commands (multi-frame) - wraps UART commands
+// Multi-frame commands that solicit data back from the VESC (poll requests)
 void bldc_interface_can_get_values(void);
 void bldc_interface_can_get_mcconf_temp(void);
-void bldc_interface_can_get_mcconf(void);
-void bldc_interface_can_get_appconf(void);
 void bldc_interface_can_send_command(uint8_t *data, uint16_t len);
-
-void bldc_interface_can_send_packet(unsigned char *data, unsigned int len);
 
 // Status message callbacks
 void bldc_interface_can_set_rx_value_func(void(*func)(mc_values *values));
@@ -72,14 +57,20 @@ uint8_t bldc_interface_can_get_primary_vesc_id(void);  // Returns 0 if no VESC d
 uint8_t bldc_interface_can_get_detected_vesc_count(void);
 
 // Per-VESC speed tracking (safety-critical: tracks all VESCs, not just primary)
-int32_t bldc_interface_can_get_max_abs_erpm(void);       // Worst-case ERPM across all active VESCs
-int32_t bldc_interface_can_get_erpm_at(uint8_t index);   // ERPM for detected VESC slot [index]
-uint8_t bldc_interface_can_get_id_at(uint8_t index);     // VESC ID for detected slot [index]
+int32_t bldc_interface_can_get_max_abs_erpm(void);          // Worst-case |ERPM| across all active VESCs
+int32_t bldc_interface_can_get_signed_dominant_erpm(void);  // Signed ERPM of the largest-magnitude VESC
+int32_t bldc_interface_can_get_erpm_at(uint8_t index);      // ERPM for detected VESC slot [index]
+uint8_t bldc_interface_can_get_id_at(uint8_t index);        // VESC ID for detected slot [index]
 
-// Multi-VESC broadcast — sends to every active VESC independently (no CAN forwarding assumed)
-void bldc_interface_can_send_to_all(uint8_t *data, uint16_t len);
-void bldc_interface_can_send_to_id(uint8_t vesc_id, uint8_t *data, uint16_t len);
-void bldc_interface_can_set_current_brake_rel_all(float current_rel);
+// Multi-VESC commands — addressed to every active VESC independently, never via CAN forwarding.
+// Both inputs are 0.0..1.0 fractions of each VESC's own configured |l_current_max| / |l_current_min|,
+// making behavior portable across builds with different motor / battery configs.
+void bldc_interface_can_set_current_rel_all(float current_rel);        // forward drive (0..1)
+void bldc_interface_can_set_current_brake_rel_all(float current_rel);  // regen brake (0..1)
+
+// Send zero-current and zero-brake to every active VESC. Use at boot or after CAN init
+// to guarantee motors are in a known-quiescent state before any throttle source starts.
+void bldc_interface_can_motors_safe_stop(void);
 
 // VESC dropout callback (fired when a previously-active VESC stops sending STATUS)
 void bldc_interface_can_set_vesc_dropout_func(void(*func)(uint8_t id));

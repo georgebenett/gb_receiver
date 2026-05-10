@@ -27,6 +27,7 @@
 #include "ble.h"
 #include "esp_gatt_common_api.h"
 #include "throttle.h"
+#include "failsafe.h"
 #include "led.h"
 #include "bms.h"
 #include "datatypes.h"
@@ -452,6 +453,12 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                     }
                     uint16_t adc_value = (uint16_t)p_data->write.value[0] |
                                                ((uint16_t)p_data->write.value[1] << 8);
+                    // Throttle is interpreted as a 0..255 byte downstream — clamp at
+                    // the trust boundary so a malformed remote can't wrap-around into
+                    // an unintended full-throttle / full-brake command.
+                    if (adc_value > 255) {
+                        adc_value = 255;
+                    }
                     uint8_t aux_output_state = p_data->write.value[2];
                     throttle_update_value(adc_value);
                     throttle_reset_timeout();
@@ -514,6 +521,10 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     	    is_authenticated = false;  // Reset authentication on disconnect
     	    throttle_reset_value();
     	    throttle_stop_timeout_monitor();
+    	    // Actively brake on link loss instead of coasting at neutral. The
+    	    // throttle-timeout path also catches this in the supervision-timeout
+    	    // window, but firing here closes the gap on a clean disconnect.
+    	    failsafe_trigger(FAILSAFE_REASON_BLE_DISCONNECT);
     	    enable_data_ntf = false;
     	    // Reset the odometer time reference so the disconnect gap is not
     	    // counted as riding distance when the next connection resumes.
