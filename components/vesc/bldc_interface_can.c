@@ -495,6 +495,10 @@ void bldc_interface_can_send_to_all(uint8_t *data, uint16_t len) {
     }
 }
 
+void bldc_interface_can_send_to_id(uint8_t vesc_id, uint8_t *data, uint16_t len) {
+    send_command_to_id(vesc_id, data, len);
+}
+
 // Apply regenerative braking to every active VESC — used by failsafe path
 void bldc_interface_can_set_current_brake_rel_all(float current_rel) {
     uint8_t buffer[4];
@@ -864,7 +868,19 @@ static void process_status_message(uint8_t id, uint8_t *data, uint8_t len) {
         return;
     }
 
-    accumulated_values.rpm = (float)raw_rpm;
+    // Use max-magnitude ERPM across all active VESCs so that if one motor is
+    // spinning and the other is at rest the remote shows the real speed.
+    int32_t display_erpm = raw_rpm;
+    for (int i = 0; i < num_detected_vescs; i++) {
+        if (!detected_vescs[i].active) continue;
+        if (now_ms - detected_vescs[i].erpm_timestamp_ms > VESC_DETECTION_TIMEOUT_MS) continue;
+        int32_t abs_i = detected_vescs[i].erpm < 0 ? -detected_vescs[i].erpm : detected_vescs[i].erpm;
+        int32_t abs_d = display_erpm < 0 ? -display_erpm : display_erpm;
+        if (abs_i > abs_d) {
+            display_erpm = detected_vescs[i].erpm;
+        }
+    }
+    accumulated_values.rpm = (float)display_erpm;
     accumulated_values.current_motor = (float)buffer_get_int16(data, &ind) / 10.0;
     accumulated_values.duty_now = (float)buffer_get_int16(data, &ind) / 1000.0;
     accumulated_values.vesc_id = id;
