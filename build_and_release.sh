@@ -243,6 +243,29 @@ fi
 # Create GitHub release
 print_info "Creating GitHub release v$VERSION..."
 
+# Build changelog from commits since the previous v* tag.
+# At this point in the script we just created v$VERSION, so look one step back
+# from it to find the prior release tag.
+PREV_TAG=$(git describe --tags --abbrev=0 --match 'v*' "v$VERSION^" 2>/dev/null || echo "")
+if [ -n "$PREV_TAG" ]; then
+    print_info "Generating changelog from $PREV_TAG..v$VERSION"
+    CHANGELOG=$(git log --pretty=format:"- %s (%h)" --no-merges "$PREV_TAG..v$VERSION")
+    CHANGELOG_HEADER="## Changes since $PREV_TAG"
+else
+    print_info "No prior v* tag found; including full history in changelog"
+    CHANGELOG=$(git log --pretty=format:"- %s (%h)" --no-merges "v$VERSION")
+    CHANGELOG_HEADER="## Changes"
+fi
+if [ -z "$CHANGELOG" ]; then
+    CHANGELOG="_No commits found between tags._"
+fi
+
+# Build the full release notes body once and reuse it for both create paths.
+RELEASE_NOTES="Firmware release v$VERSION
+
+${CHANGELOG_HEADER}
+${CHANGELOG}"
+
 # Check if release already exists
 if gh release view "v$VERSION" --repo "$REPO" &> /dev/null; then
     print_warn "Release v$VERSION already exists. Do you want to:"
@@ -258,7 +281,7 @@ if gh release view "v$VERSION" --repo "$REPO" &> /dev/null; then
             gh release create "v$VERSION" \
                 --repo "$REPO" \
                 --title "v$VERSION" \
-                --notes "Firmware release v$VERSION" \
+                --notes "$RELEASE_NOTES" \
                 "$ARTIFACTS_DIR"/*.zip
             ;;
         2)
@@ -290,7 +313,7 @@ else
     gh release create "v$VERSION" \
         --repo "$REPO" \
         --title "v$VERSION" \
-        --notes "Firmware release v$VERSION
+        --notes "${RELEASE_NOTES}
 
 ## Artifacts
 ${ARTIFACT_LIST}
