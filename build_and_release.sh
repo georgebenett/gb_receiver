@@ -45,6 +45,24 @@ fi
 
 print_info "Building firmware version: $VERSION"
 
+# Refuse to run with a dirty working tree — the tag we create must point at a
+# commit whose source actually contains $VERSION, otherwise the released binary
+# won't match the code at v$VERSION.
+if ! git diff --quiet HEAD -- 2>/dev/null || [ -n "$(git ls-files --others --exclude-standard)" ]; then
+    print_error "Working tree is dirty. Commit your version bump (and any other changes) before releasing."
+    print_error "Run: git status"
+    exit 1
+fi
+
+# Also require the current commit to be pushed, so origin has the commit the tag will reference.
+if ! git diff --quiet "@{upstream}"..HEAD 2>/dev/null; then
+    print_warn "Local commits are ahead of upstream. Push them before tagging so the release tag references a pushed commit."
+    read -p "Continue anyway? [y/N]: " confirm_unpushed
+    if [[ ! "$confirm_unpushed" =~ ^[Yy]$ ]]; then
+        exit 1
+    fi
+fi
+
 # Check for required tools
 if ! command -v gh &> /dev/null; then
     print_error "GitHub CLI (gh) is not installed. Install it from https://cli.github.com/"
