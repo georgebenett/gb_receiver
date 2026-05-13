@@ -676,14 +676,18 @@ static void handle_cmd_get_paired_list(const binary_packet_t* packet) {
     ble_paired_entry_t entries[BLE_MAX_PAIRED_REMOTES];
     uint8_t n = ble_get_paired_list(entries, BLE_MAX_PAIRED_REMOTES);
 
-    // Payload: [count][N * (mac:6, addr_type:1)]
-    uint8_t payload[1 + BLE_MAX_PAIRED_REMOTES * 7];
+    // Payload: [count][N * (mac:6, addr_type:1)][connected_mac:6]
+    // connected_mac is all zeros when nothing is connected.
+    uint8_t payload[1 + BLE_MAX_PAIRED_REMOTES * 7 + 6];
     uint16_t idx = 0;
     payload[idx++] = n;
     for (int i = 0; i < n; i++) {
         memcpy(&payload[idx], entries[i].mac, 6); idx += 6;
         payload[idx++] = entries[i].addr_type;
     }
+    uint8_t connected_mac[6] = {0};
+    ble_get_connected_mac(connected_mac);
+    memcpy(&payload[idx], connected_mac, 6); idx += 6;
     usb_serial_send_response(RSP_PAIRED_LIST, payload, idx);
 }
 

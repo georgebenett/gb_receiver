@@ -75,6 +75,8 @@ uint8_t ble_get_scan_results(ble_scan_entry_t *out, uint8_t max_count);
 // Persistent whitelist of remotes allowed to connect.
 uint8_t ble_get_paired_count(void);
 uint8_t ble_get_paired_list(ble_paired_entry_t *out, uint8_t max_count);
+// Returns false (and leaves out untouched) if no remote is connected.
+bool ble_get_connected_mac(uint8_t out[6]);
 // Returns false if the list is full or that MAC is already paired.
 bool ble_pair_remote(const uint8_t mac[6], uint8_t addr_type);
 // Returns false if the MAC is not in the paired list.

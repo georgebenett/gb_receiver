@@ -709,6 +709,12 @@ uint8_t ble_get_paired_list(ble_paired_entry_t *out, uint8_t max_count) {
     return n;
 }
 
+bool ble_get_connected_mac(uint8_t out[6]) {
+    if (!is_connected) return false;
+    memcpy(out, spp_remote_bda, 6);
+    return true;
+}
+
 bool ble_start_scan(void) {
     if (scan_active || is_connected) return false;
     scan_result_count = 0;
