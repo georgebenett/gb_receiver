@@ -43,6 +43,11 @@ static void handle_cmd_start_streaming(const binary_packet_t* packet);
 static void handle_cmd_stop_streaming(const binary_packet_t* packet);
 static void handle_cmd_set_stream_rate(const binary_packet_t* packet);
 static void handle_cmd_reset_odometer(const binary_packet_t* packet);
+static void handle_cmd_scan_remotes(const binary_packet_t* packet);
+static void handle_cmd_get_scan_results(const binary_packet_t* packet);
+static void handle_cmd_pair_remote(const binary_packet_t* packet);
+static void handle_cmd_unpair_remote(const binary_packet_t* packet);
+static void handle_cmd_get_paired_list(const binary_packet_t* packet);
 static void handle_cmd_check_coredump(const binary_packet_t* packet);
 static void handle_cmd_get_coredump(const binary_packet_t* packet);
 
@@ -315,6 +320,21 @@ void usb_serial_process_packet(const binary_packet_t* packet) {
         case CMD_RESET_ODOMETER:
             handle_cmd_reset_odometer(packet);
             break;
+        case CMD_SCAN_REMOTES:
+            handle_cmd_scan_remotes(packet);
+            break;
+        case CMD_GET_SCAN_RESULTS:
+            handle_cmd_get_scan_results(packet);
+            break;
+        case CMD_PAIR_REMOTE:
+            handle_cmd_pair_remote(packet);
+            break;
+        case CMD_UNPAIR_REMOTE:
+            handle_cmd_unpair_remote(packet);
+            break;
+        case CMD_GET_PAIRED_LIST:
+            handle_cmd_get_paired_list(packet);
+            break;
         case CMD_CHECK_COREDUMP:
             handle_cmd_check_coredump(packet);
             break;
@@ -374,12 +394,13 @@ static void handle_cmd_get_config(const binary_packet_t* packet) {
     uint8_t payload[256];
     uint16_t idx = 0;
 
-    // Status flags
+    // flags: bit0 connected, bit1 scanning, bit2 paired_count>0
     uint8_t flags = 0;
-    if (ble_is_connected()) flags |= 0x01;  // BLE connected
+    if (ble_is_connected())          flags |= 0x01;
+    if (ble_is_scanning())           flags |= 0x02;
+    if (ble_get_paired_count() > 0)  flags |= 0x04;
     payload[idx++] = flags;
 
-    // Current throttle value (from BLE)
     uint16_t throttle_value = throttle_get_value();
     payload[idx++] = throttle_value & 0xFF;
     payload[idx++] = (throttle_value >> 8) & 0xFF;
@@ -478,9 +499,11 @@ void usb_serial_send_stream_data(void) {
     payload[idx++] = (timestamp_ms >> 16) & 0xFF;
     payload[idx++] = (timestamp_ms >> 24) & 0xFF;
 
-    // Status flags
+    // flags: bit0 connected, bit1 scanning, bit2 paired_count>0
     uint8_t flags = 0;
-    if (ble_is_connected()) flags |= 0x01;  // BLE connected
+    if (ble_is_connected())          flags |= 0x01;
+    if (ble_is_scanning())           flags |= 0x02;
+    if (ble_get_paired_count() > 0)  flags |= 0x04;
     payload[idx++] = flags;
 
     // Current throttle value from BLE (2 bytes, little-endian)
@@ -602,6 +625,66 @@ void usb_serial_send_stream_data(void) {
 static void handle_cmd_reset_odometer(const binary_packet_t* packet) {
     ble_reset_trip_distance();
     usb_serial_send_ack(CMD_RESET_ODOMETER, ERR_OK);
+}
+
+static void handle_cmd_scan_remotes(const binary_packet_t* packet) {
+    (void)packet;
+    bool ok = ble_start_scan();
+    usb_serial_send_ack(CMD_SCAN_REMOTES, ok ? ERR_OK : ERR_BUSY);
+}
+
+static void handle_cmd_get_scan_results(const binary_packet_t* packet) {
+    (void)packet;
+    ble_scan_entry_t entries[BLE_SCAN_MAX_RESULTS];
+    uint8_t n = ble_get_scan_results(entries, BLE_SCAN_MAX_RESULTS);
+
+    // Payload: [count][N * (mac:6, addr_type:1, rssi:1, name_len:1, name:name_len)]
+    uint8_t payload[1 + BLE_SCAN_MAX_RESULTS * (6 + 1 + 1 + 1 + BLE_SCAN_NAME_MAX)];
+    uint16_t idx = 0;
+    payload[idx++] = n;
+    for (int i = 0; i < n; i++) {
+        memcpy(&payload[idx], entries[i].mac, 6); idx += 6;
+        payload[idx++] = entries[i].addr_type;
+        payload[idx++] = (uint8_t)entries[i].rssi;
+        payload[idx++] = entries[i].name_len;
+        memcpy(&payload[idx], entries[i].name, entries[i].name_len);
+        idx += entries[i].name_len;
+    }
+    usb_serial_send_response(RSP_SCAN_RESULTS, payload, idx);
+}
+
+static void handle_cmd_pair_remote(const binary_packet_t* packet) {
+    if (packet->payload_length != 7) {
+        usb_serial_send_ack(CMD_PAIR_REMOTE, ERR_INVALID_PAYLOAD);
+        return;
+    }
+    bool ok = ble_pair_remote(packet->payload, packet->payload[6]);
+    usb_serial_send_ack(CMD_PAIR_REMOTE, ok ? ERR_OK : ERR_BUSY);
+}
+
+static void handle_cmd_unpair_remote(const binary_packet_t* packet) {
+    if (packet->payload_length != 6) {
+        usb_serial_send_ack(CMD_UNPAIR_REMOTE, ERR_INVALID_PAYLOAD);
+        return;
+    }
+    bool ok = ble_unpair_remote_by_mac(packet->payload);
+    usb_serial_send_ack(CMD_UNPAIR_REMOTE, ok ? ERR_OK : ERR_OUT_OF_RANGE);
+}
+
+static void handle_cmd_get_paired_list(const binary_packet_t* packet) {
+    (void)packet;
+    ble_paired_entry_t entries[BLE_MAX_PAIRED_REMOTES];
+    uint8_t n = ble_get_paired_list(entries, BLE_MAX_PAIRED_REMOTES);
+
+    // Payload: [count][N * (mac:6, addr_type:1)]
+    uint8_t payload[1 + BLE_MAX_PAIRED_REMOTES * 7];
+    uint16_t idx = 0;
+    payload[idx++] = n;
+    for (int i = 0; i < n; i++) {
+        memcpy(&payload[idx], entries[i].mac, 6); idx += 6;
+        payload[idx++] = entries[i].addr_type;
+    }
+    usb_serial_send_response(RSP_PAIRED_LIST, payload, idx);
 }
 
 // ========== COREDUMP HANDLERS ==========

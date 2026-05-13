@@ -37,17 +37,24 @@ typedef enum {
     CMD_STOP_STREAMING         = 0x11,  // Stop real-time data streaming
     CMD_SET_STREAM_RATE        = 0x12,  // Set streaming rate in Hz (payload: uint16)
     CMD_RESET_ODOMETER         = 0x13,  // Reset trip distance stored on receiver
-    CMD_CHECK_COREDUMP         = 0x16,  // Check if coredump exists in flash
-    CMD_GET_COREDUMP           = 0x17,  // Get coredump data (payload: chunk_offset uint16)
+    CMD_SCAN_REMOTES           = 0x14,  // Start BLE scan for advertising remotes
+    CMD_UNPAIR_REMOTE          = 0x15,  // Forget paired remote (payload: mac[6])
+    CMD_CHECK_COREDUMP         = 0x16,
+    CMD_GET_COREDUMP           = 0x17,
+    CMD_GET_SCAN_RESULTS       = 0x18,  // Fetch current scan result list
+    CMD_PAIR_REMOTE            = 0x19,  // Add MAC to whitelist (payload: mac[6] + addr_type)
+    CMD_GET_PAIRED_LIST        = 0x1A,  // Fetch currently paired MACs
 
     // Response IDs (Device -> Host)
-    RSP_ACK                    = 0x80,  // Acknowledge with result code
-    RSP_ERROR                  = 0x81,  // Error response
-    RSP_FIRMWARE_VERSION       = 0x82,  // Firmware version data
-    RSP_CONFIG                 = 0x83,  // Configuration data
-    RSP_COREDUMP_INFO         = 0x86,  // Coredump info (exists flag, size)
-    RSP_COREDUMP_CHUNK         = 0x87,  // Coredump data chunk
-    RSP_STREAM_DATA            = 0x90,  // Real-time streaming data
+    RSP_ACK                    = 0x80,
+    RSP_ERROR                  = 0x81,
+    RSP_FIRMWARE_VERSION       = 0x82,
+    RSP_CONFIG                 = 0x83,
+    RSP_COREDUMP_INFO         = 0x86,
+    RSP_COREDUMP_CHUNK         = 0x87,
+    RSP_SCAN_RESULTS           = 0x88,  // List of discovered remotes
+    RSP_PAIRED_LIST            = 0x89,  // List of paired remotes
+    RSP_STREAM_DATA            = 0x90,
 } packet_command_t;
 
 typedef enum {
@@ -62,6 +69,7 @@ typedef enum {
     ERR_NOT_SUPPORTED          = 0x08,  // Command not supported on this target
     ERR_NO_COREDUMP            = 0x09,  // No coredump available
     ERR_READ_FAILED            = 0x0A,  // Failed to read data
+    ERR_BUSY                   = 0x0B,  // Rejected: device in conflicting state
 } error_code_t;
 
 typedef enum {

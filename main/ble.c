@@ -88,19 +88,17 @@ static float trip_km_nvs_committed = 0.0f;
 
 static esp_bd_addr_t spp_remote_bda = {0x0,};
 
-// Paired remote management (receiver prefers its last-connected remote on boot)
-static esp_bd_addr_t paired_remote_mac = {0};
-static bool has_paired_remote = false;
-static TimerHandle_t prefer_paired_timer = NULL;
-static TaskHandle_t prefer_paired_task_handle = NULL;
+static ble_paired_entry_t paired_list[BLE_MAX_PAIRED_REMOTES];
+static uint8_t paired_count = 0;
+static TaskHandle_t adv_task_handle = NULL;
 
-typedef enum {
-    BLE_WINDOW_PAIRED = 0,  // Window 1: whitelist (last saved MAC)
-    BLE_WINDOW_OPEN,        // Window 2: open to any remote
-    BLE_WINDOW_CLOSED,      // Window 3: advertising stopped, waiting for reboot
-} ble_window_state_t;
+static ble_scan_entry_t scan_results[BLE_SCAN_MAX_RESULTS];
+static uint8_t scan_result_count = 0;
+static bool scan_active = false;
 
-static ble_window_state_t window_state = BLE_WINDOW_PAIRED;
+// adv_task notification bits — keep BLE stack calls off timer/GATT callbacks.
+#define ADV_TASK_NOTIFY_REFRESH_ADV      (1U << 0)
+#define ADV_TASK_NOTIFY_RELOAD_PAIRED    (1U << 1)
 
 static uint16_t spp_handle_table[SPP_IDX_NB];
 static TaskHandle_t telemetry_task_handle = NULL;
@@ -239,107 +237,95 @@ static uint8_t find_char_and_desr_index(uint16_t handle)
 
 // --- Paired remote NVS helpers ---
 
-static void ble_paired_remote_load_mac(void)
+static int paired_find_index(const uint8_t mac[6])
 {
-    nvs_handle_t nvs_handle;
-    esp_err_t err = nvs_open(BLE_PAIRED_REMOTE_NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
-    if (err == ESP_OK) {
-        uint8_t valid = 0;
-        if (nvs_get_u8(nvs_handle, BLE_PAIRED_REMOTE_NVS_KEY_VALID, &valid) == ESP_OK && valid == 1) {
-            size_t mac_len = sizeof(esp_bd_addr_t);
-            if (nvs_get_blob(nvs_handle, BLE_PAIRED_REMOTE_NVS_KEY_MAC, paired_remote_mac, &mac_len) == ESP_OK) {
-                has_paired_remote = true;
-                ESP_LOGI(GATTS_TABLE_TAG, "Loaded paired remote MAC: %02x:%02x:%02x:%02x:%02x:%02x",
-                         paired_remote_mac[0], paired_remote_mac[1], paired_remote_mac[2],
-                         paired_remote_mac[3], paired_remote_mac[4], paired_remote_mac[5]);
-            }
-        }
-        nvs_close(nvs_handle);
+    for (int i = 0; i < paired_count; i++) {
+        if (memcmp(paired_list[i].mac, mac, 6) == 0) return i;
     }
+    return -1;
 }
 
-static void ble_paired_remote_save_mac(esp_bd_addr_t mac)
+static void paired_save_nvs(void)
 {
     nvs_handle_t nvs_handle;
-    esp_err_t err = nvs_open(BLE_PAIRED_REMOTE_NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
-    if (err != ESP_OK) {
-        ESP_LOGE(GATTS_TABLE_TAG, "Failed to open NVS for paired remote MAC: %s", esp_err_to_name(err));
-        return;
+    if (nvs_open(BLE_PAIRED_REMOTE_NVS_NAMESPACE, NVS_READWRITE, &nvs_handle) != ESP_OK) return;
+    if (paired_count == 0) {
+        nvs_erase_key(nvs_handle, BLE_PAIRED_REMOTE_NVS_KEY_LIST);
+    } else {
+        nvs_set_blob(nvs_handle, BLE_PAIRED_REMOTE_NVS_KEY_LIST,
+                     paired_list, paired_count * sizeof(ble_paired_entry_t));
     }
-    err = nvs_set_blob(nvs_handle, BLE_PAIRED_REMOTE_NVS_KEY_MAC, mac, sizeof(esp_bd_addr_t));
-    if (err == ESP_OK) {
-        uint8_t valid = 1;
-        err = nvs_set_u8(nvs_handle, BLE_PAIRED_REMOTE_NVS_KEY_VALID, valid);
-    }
-    if (err == ESP_OK) {
-        err = nvs_commit(nvs_handle);
-    }
-    if (err == ESP_OK) {
-        memcpy(paired_remote_mac, mac, sizeof(esp_bd_addr_t));
-        has_paired_remote = true;
-        ESP_LOGI(GATTS_TABLE_TAG, "Saved paired remote MAC: %02x:%02x:%02x:%02x:%02x:%02x",
-                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-    }
+    nvs_commit(nvs_handle);
     nvs_close(nvs_handle);
 }
 
-// --- Advertising window state machine ---
-
-static void prefer_paired_timer_cb(TimerHandle_t xTimer)
+static void paired_load_nvs(void)
 {
-    if (prefer_paired_task_handle != NULL) {
-        xTaskNotifyGive(prefer_paired_task_handle);
-    }
-}
+    paired_count = 0;
+    nvs_handle_t nvs_handle;
+    if (nvs_open(BLE_PAIRED_REMOTE_NVS_NAMESPACE, NVS_READWRITE, &nvs_handle) != ESP_OK) return;
 
-static void prefer_paired_task(void *pvParameters)
-{
-    while (1) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        if (is_connected) continue;
-
-        if (window_state == BLE_WINDOW_PAIRED) {
-            // Transition to window 2: open to any remote for 10s
-            window_state = BLE_WINDOW_OPEN;
-            spp_adv_params.adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY;
-            esp_ble_gap_stop_advertising();
-            esp_ble_gap_start_advertising(&spp_adv_params);
-            xTimerChangePeriod(prefer_paired_timer, pdMS_TO_TICKS(BLE_WINDOW_OPEN_MS), 0);
-            ESP_LOGI(GATTS_TABLE_TAG, "Window 2 (10s): open to all remotes");
-        } else if (window_state == BLE_WINDOW_OPEN) {
-            // Transition to window 3: stop advertising until reboot
-            window_state = BLE_WINDOW_CLOSED;
-            esp_ble_gap_stop_advertising();
-            ESP_LOGI(GATTS_TABLE_TAG, "Window 3: pairing closed, waiting for reboot");
+    size_t len = sizeof(paired_list);
+    esp_err_t err = nvs_get_blob(nvs_handle, BLE_PAIRED_REMOTE_NVS_KEY_LIST, paired_list, &len);
+    if (err == ESP_OK) {
+        paired_count = len / sizeof(ble_paired_entry_t);
+        if (paired_count > BLE_MAX_PAIRED_REMOTES) paired_count = BLE_MAX_PAIRED_REMOTES;
+    } else {
+        // Migrate legacy single-MAC schema if present.
+        uint8_t valid = 0;
+        size_t mac_len = 6;
+        uint8_t legacy_mac[6];
+        if (nvs_get_u8(nvs_handle, BLE_PAIRED_REMOTE_NVS_KEY_VALID, &valid) == ESP_OK && valid == 1 &&
+            nvs_get_blob(nvs_handle, BLE_PAIRED_REMOTE_NVS_KEY_MAC, legacy_mac, &mac_len) == ESP_OK) {
+            memcpy(paired_list[0].mac, legacy_mac, 6);
+            paired_list[0].addr_type = BLE_WL_ADDR_TYPE_PUBLIC;
+            paired_count = 1;
+            nvs_set_blob(nvs_handle, BLE_PAIRED_REMOTE_NVS_KEY_LIST,
+                         paired_list, sizeof(ble_paired_entry_t));
+            nvs_commit(nvs_handle);
+            nvs_erase_key(nvs_handle, BLE_PAIRED_REMOTE_NVS_KEY_MAC);
+            nvs_erase_key(nvs_handle, BLE_PAIRED_REMOTE_NVS_KEY_VALID);
+            nvs_commit(nvs_handle);
+            ESP_LOGI(GATTS_TABLE_TAG, "Migrated legacy paired MAC to new schema");
         }
     }
+    nvs_close(nvs_handle);
+    ESP_LOGI(GATTS_TABLE_TAG, "Loaded %d paired remote(s)", paired_count);
 }
 
-// Start or restart the 3-window advertising sequence.
-// Sets adv_filter_policy in spp_adv_params — call before esp_ble_gap_start_advertising.
-static void start_adv_window_sequence(void)
+// Reconcile controller whitelist with paired_list[].
+static void whitelist_sync(void)
 {
-    if (prefer_paired_timer == NULL) {
-        prefer_paired_timer = xTimerCreate("adv_window", pdMS_TO_TICKS(BLE_WINDOW_PAIRED_MS),
-                                           pdFALSE, NULL, prefer_paired_timer_cb);
-    }
-    if (has_paired_remote) {
-        window_state = BLE_WINDOW_PAIRED;
-        spp_adv_params.adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_WLST;
-        xTimerChangePeriod(prefer_paired_timer, pdMS_TO_TICKS(BLE_WINDOW_PAIRED_MS), 0);
-        ESP_LOGI(GATTS_TABLE_TAG, "Window 1 (10s): paired MAC only");
-    } else {
-        window_state = BLE_WINDOW_OPEN;
-        spp_adv_params.adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY;
-        xTimerChangePeriod(prefer_paired_timer, pdMS_TO_TICKS(BLE_WINDOW_OPEN_MS), 0);
-        ESP_LOGI(GATTS_TABLE_TAG, "Window 2 (10s): open to all (no paired remote)");
+    esp_ble_gap_clear_whitelist();
+    for (int i = 0; i < paired_count; i++) {
+        esp_ble_gap_update_whitelist(true, paired_list[i].mac, paired_list[i].addr_type);
     }
 }
 
-static void stop_adv_window(void)
+// Advertise iff we have ≥1 paired remote and aren't already connected.
+// Whitelist filter ensures only paired MACs may connect.
+static void apply_advertising_state(void)
 {
-    if (prefer_paired_timer != NULL) {
-        xTimerStop(prefer_paired_timer, 0);
+    esp_ble_gap_stop_advertising();
+    if (is_connected) return;
+    if (paired_count == 0) return;
+    spp_adv_params.adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_WLST;
+    esp_ble_gap_start_advertising(&spp_adv_params);
+}
+
+static void adv_task(void *pvParameters)
+{
+    uint32_t notification = 0;
+    while (1) {
+        if (xTaskNotifyWait(0, UINT32_MAX, &notification, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+        if (notification & ADV_TASK_NOTIFY_RELOAD_PAIRED) {
+            whitelist_sync();
+        }
+        if (notification & ADV_TASK_NOTIFY_REFRESH_ADV) {
+            apply_advertising_state();
+        }
     }
 }
 
@@ -351,9 +337,52 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
 
     switch (event) {
     case ESP_GAP_BLE_ADV_DATA_RAW_SET_COMPLETE_EVT:
-        start_adv_window_sequence();  // Sets filter policy before advertising starts
-        esp_ble_gap_start_advertising(&spp_adv_params);
+        apply_advertising_state();
         break;
+
+    case ESP_GAP_BLE_SCAN_PARAM_SET_COMPLETE_EVT:
+        // Triggered after esp_ble_gap_set_scan_params during a scan request.
+        if (param->scan_param_cmpl.status == ESP_BT_STATUS_SUCCESS && scan_active) {
+            esp_ble_gap_start_scanning(BLE_SCAN_DURATION_S);
+        } else if (param->scan_param_cmpl.status != ESP_BT_STATUS_SUCCESS) {
+            scan_active = false;
+        }
+        break;
+
+    case ESP_GAP_BLE_SCAN_RESULT_EVT: {
+        struct ble_scan_result_evt_param *r = &param->scan_rst;
+        if (r->search_evt == ESP_GAP_SEARCH_INQ_RES_EVT) {
+            uint8_t adv_name_len = 0;
+            uint8_t *adv_name = esp_ble_resolve_adv_data(r->ble_adv,
+                                                        ESP_BLE_AD_TYPE_NAME_CMPL,
+                                                        &adv_name_len);
+            if (adv_name == NULL || adv_name_len < 6 ||
+                memcmp(adv_name, "GS-REM", 6) != 0) {
+                break;
+            }
+            // De-dup by MAC; refresh RSSI on repeat sightings.
+            int slot = -1;
+            for (int i = 0; i < scan_result_count; i++) {
+                if (memcmp(scan_results[i].mac, r->bda, 6) == 0) { slot = i; break; }
+            }
+            if (slot < 0) {
+                if (scan_result_count >= BLE_SCAN_MAX_RESULTS) break;
+                slot = scan_result_count++;
+                memcpy(scan_results[slot].mac, r->bda, 6);
+                scan_results[slot].addr_type = r->ble_addr_type;
+            }
+            scan_results[slot].rssi = r->rssi;
+            uint8_t copy_len = adv_name_len < BLE_SCAN_NAME_MAX - 1 ? adv_name_len
+                                                                   : BLE_SCAN_NAME_MAX - 1;
+            memcpy(scan_results[slot].name, adv_name, copy_len);
+            scan_results[slot].name[copy_len] = '\0';
+            scan_results[slot].name_len = copy_len;
+        } else if (r->search_evt == ESP_GAP_SEARCH_INQ_CMPL_EVT) {
+            scan_active = false;
+            ESP_LOGI(GATTS_TABLE_TAG, "Scan complete: %d remote(s) found", scan_result_count);
+        }
+        break;
+    }
     case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
         //advertising start complete event to indicate advertising start successfully or failed
         if((err = param->adv_start_cmpl.status) != ESP_BT_STATUS_SUCCESS) {
@@ -407,11 +436,8 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     	    ESP_LOGI(GATTS_TABLE_TAG, "%s %d", __func__, __LINE__);
         	esp_ble_gap_set_device_name(SAMPLE_DEVICE_NAME);
 
-        	// Load paired remote MAC; whitelist updated here so it's ready before advertising
-        	ble_paired_remote_load_mac();
-        	if (has_paired_remote) {
-        	    esp_ble_gap_update_whitelist(true, paired_remote_mac, BLE_WL_ADDR_TYPE_PUBLIC);
-        	}
+        	paired_load_nvs();
+        	whitelist_sync();
 
         	ESP_LOGI(GATTS_TABLE_TAG, "%s %d", __func__, __LINE__);
         	esp_ble_gap_config_adv_data_raw((uint8_t *)spp_adv_data, sizeof(spp_adv_data));
@@ -501,13 +527,6 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     	    throttle_start_timeout_monitor();
             bldc_interface_can_get_mcconf_temp(); // Fetch compact motor config for BLE telemetry
     	    memcpy(&spp_remote_bda,&p_data->connect.remote_bda,sizeof(esp_bd_addr_t));
-    	    // Connection established — freeze the advertising window state
-    	    stop_adv_window();
-    	    // Save remote MAC if new or different
-    	    if (!has_paired_remote ||
-    	        memcmp(paired_remote_mac, p_data->connect.remote_bda, sizeof(esp_bd_addr_t)) != 0) {
-    	        ble_paired_remote_save_mac(p_data->connect.remote_bda);
-    	    }
     	    // Delete previous telemetry task if it leaked from a prior connection
     	    if (telemetry_task_handle != NULL) {
     	        vTaskDelete(telemetry_task_handle);
@@ -529,9 +548,9 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     	    // Reset the odometer time reference so the disconnect gap is not
     	    // counted as riding distance when the next connection resumes.
     	    trip_last_update_ms = 0;
-    	    // Restart 3-window sequence on disconnect
-    	    start_adv_window_sequence();  // Resets state and sets filter policy
-    	    esp_ble_gap_start_advertising(&spp_adv_params);
+    	    if (adv_task_handle != NULL) {
+    	        xTaskNotify(adv_task_handle, ADV_TASK_NOTIFY_REFRESH_ADV, eSetBits);
+    	    }
     	    break;
     	case ESP_GATTS_OPEN_EVT:
     	    break;
@@ -637,8 +656,7 @@ esp_err_t ble_spp_server_start(void)
     esp_ble_gap_register_callback(gap_event_handler);
     esp_ble_gatts_app_register(ESP_SPP_APP_ID);
 
-    // Create task to handle advertising window transitions (avoids BLE API calls from timer context)
-    xTaskCreate(prefer_paired_task, "adv_window", 2048, NULL, 5, &prefer_paired_task_handle);
+    xTaskCreate(adv_task, "ble_adv", 2048, NULL, 5, &adv_task_handle);
 
     // Set local MTU
     ret = esp_ble_gatt_set_local_mtu(500);
@@ -675,6 +693,78 @@ esp_err_t ble_spp_server_start(void)
 
 bool ble_is_connected(void) {
     return is_connected;
+}
+
+bool ble_is_scanning(void) {
+    return scan_active;
+}
+
+uint8_t ble_get_paired_count(void) {
+    return paired_count;
+}
+
+uint8_t ble_get_paired_list(ble_paired_entry_t *out, uint8_t max_count) {
+    uint8_t n = paired_count < max_count ? paired_count : max_count;
+    memcpy(out, paired_list, n * sizeof(ble_paired_entry_t));
+    return n;
+}
+
+bool ble_start_scan(void) {
+    if (scan_active || is_connected) return false;
+    scan_result_count = 0;
+    memset(scan_results, 0, sizeof(scan_results));
+    scan_active = true;
+    static esp_ble_scan_params_t params = {
+        .scan_type          = BLE_SCAN_TYPE_ACTIVE,
+        .own_addr_type      = BLE_ADDR_TYPE_PUBLIC,
+        .scan_filter_policy = BLE_SCAN_FILTER_ALLOW_ALL,
+        .scan_interval      = 0x50,
+        .scan_window        = 0x30,
+        .scan_duplicate     = BLE_SCAN_DUPLICATE_DISABLE,
+    };
+    if (esp_ble_gap_set_scan_params(&params) != ESP_OK) {
+        scan_active = false;
+        return false;
+    }
+    return true;
+}
+
+uint8_t ble_get_scan_results(ble_scan_entry_t *out, uint8_t max_count) {
+    uint8_t n = scan_result_count < max_count ? scan_result_count : max_count;
+    memcpy(out, scan_results, n * sizeof(ble_scan_entry_t));
+    return n;
+}
+
+bool ble_pair_remote(const uint8_t mac[6], uint8_t addr_type) {
+    if (paired_find_index(mac) >= 0) return false;
+    if (paired_count >= BLE_MAX_PAIRED_REMOTES) return false;
+    memcpy(paired_list[paired_count].mac, mac, 6);
+    paired_list[paired_count].addr_type = addr_type;
+    paired_count++;
+    paired_save_nvs();
+    if (adv_task_handle != NULL) {
+        xTaskNotify(adv_task_handle, ADV_TASK_NOTIFY_RELOAD_PAIRED | ADV_TASK_NOTIFY_REFRESH_ADV, eSetBits);
+    }
+    return true;
+}
+
+bool ble_unpair_remote_by_mac(const uint8_t mac[6]) {
+    int idx = paired_find_index(mac);
+    if (idx < 0) return false;
+    esp_ble_remove_bond_device(paired_list[idx].mac);
+    for (int i = idx; i < paired_count - 1; i++) {
+        paired_list[i] = paired_list[i + 1];
+    }
+    paired_count--;
+    memset(&paired_list[paired_count], 0, sizeof(ble_paired_entry_t));
+    paired_save_nvs();
+    if (is_connected && memcmp(spp_remote_bda, mac, 6) == 0) {
+        esp_ble_gap_disconnect(spp_remote_bda);
+    }
+    if (adv_task_handle != NULL) {
+        xTaskNotify(adv_task_handle, ADV_TASK_NOTIFY_RELOAD_PAIRED | ADV_TASK_NOTIFY_REFRESH_ADV, eSetBits);
+    }
+    return true;
 }
 
 void ble_reset_trip_distance(void) {
