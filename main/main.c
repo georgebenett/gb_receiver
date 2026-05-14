@@ -2,6 +2,7 @@
 #include "esp_log.h"
 #include "esp_bt.h"
 #include "esp_system.h"
+#include "esp_ota_ops.h"
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -58,6 +59,23 @@ static void mcconf_temp_received(mc_temp_config_t *conf) {
     } else {
         ESP_LOGW(TAG, "MC temp conf invalid or not received");
     }
+}
+
+// After an OTA, the new image boots in PENDING_VERIFY. If we reboot before
+// confirming it, the bootloader rolls back to the previous slot. We give the
+// device 60 s of uptime — long enough to catch boot-loop bugs, short enough
+// that a power-cycle right after an update doesn't surprise the user with a
+// rollback.
+static void ota_boot_verifier_task(void *arg) {
+    vTaskDelay(pdMS_TO_TICKS(60000));
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    esp_ota_img_states_t state;
+    if (esp_ota_get_state_partition(running, &state) == ESP_OK &&
+        state == ESP_OTA_IMG_PENDING_VERIFY) {
+        esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+        ESP_LOGW(TAG, "OTA boot verified (%s)", esp_err_to_name(err));
+    }
+    vTaskDelete(NULL);
 }
 
 static void vesc_task(void *pvParameters) {
@@ -161,4 +179,5 @@ void app_main(void) {
     // Start CAN RX task to process incoming CAN frames
     xTaskCreate(bldc_interface_can_rx_task, "can_rx_task", 4096, NULL, 5, NULL);
     xTaskCreate(vesc_task, "vesc_task", 4096, NULL, 5, NULL);
+    xTaskCreate(ota_boot_verifier_task, "ota_verify", 2048, NULL, 1, NULL);
 }
