@@ -65,6 +65,10 @@ esp_err_t ble_spp_server_init(void);
 esp_err_t ble_spp_server_start(void);
 bool ble_is_connected(void);
 void ble_reset_trip_distance(void);
+float ble_get_trip_km(void);
+// Request the BLE module to re-evaluate advertising state (used by the Wi-Fi
+// fallback when it starts / stops, so adv is paused while the AP is up).
+void ble_refresh_advertising(void);
 
 // Discover remotes by scanning for advertised name "GS-REM".
 // Returns false if a remote is connected (radio busy) or scan already running.

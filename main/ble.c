@@ -33,6 +33,7 @@
 #include "datatypes.h"
 #include "bldc_interface_can.h"
 #include "aux_output.h"
+#include "wifi_ap.h"
 
 extern mc_values* get_stored_vesc_values(void);
 extern bms_values_t* get_stored_bms_values(void);
@@ -95,6 +96,9 @@ static TaskHandle_t adv_task_handle = NULL;
 static ble_scan_entry_t scan_results[BLE_SCAN_MAX_RESULTS];
 static uint8_t scan_result_count = 0;
 static bool scan_active = false;
+
+// Brings up the SoftAP fallback after a stretch of no remote connection.
+static TimerHandle_t wifi_idle_timer = NULL;
 
 // adv_task notification bits — keep BLE stack calls off timer/GATT callbacks.
 #define ADV_TASK_NOTIFY_REFRESH_ADV      (1U << 0)
@@ -303,7 +307,8 @@ static void whitelist_sync(void)
 }
 
 // Advertise iff we have ≥1 paired remote and aren't already connected.
-// Whitelist filter ensures only paired MACs may connect.
+// We let adv run alongside the Wi-Fi AP — the AP is dropped shortly after a
+// successful pair so the radio is free for the new BLE link to come up.
 static void apply_advertising_state(void)
 {
     esp_ble_gap_stop_advertising();
@@ -320,13 +325,32 @@ static void adv_task(void *pvParameters)
         if (xTaskNotifyWait(0, UINT32_MAX, &notification, portMAX_DELAY) != pdTRUE) {
             continue;
         }
+        // Filter-accept-list ops fail with HCI "Cmd Disallowed" while
+        // advertising is using the list, so pause adv around the resync.
         if (notification & ADV_TASK_NOTIFY_RELOAD_PAIRED) {
+            esp_ble_gap_stop_advertising();
+            vTaskDelay(pdMS_TO_TICKS(50));
             whitelist_sync();
-        }
-        if (notification & ADV_TASK_NOTIFY_REFRESH_ADV) {
+            apply_advertising_state();
+        } else if (notification & ADV_TASK_NOTIFY_REFRESH_ADV) {
             apply_advertising_state();
         }
     }
+}
+
+static void wifi_idle_timer_cb(TimerHandle_t t)
+{
+    if (!is_connected) {
+        wifi_ap_start();
+    }
+}
+
+static void wifi_idle_timer_kick(void)
+{
+    if (wifi_idle_timer == NULL) return;
+    xTimerStop(wifi_idle_timer, 0);
+    xTimerChangePeriod(wifi_idle_timer, pdMS_TO_TICKS(WIFI_AP_IDLE_TIMEOUT_MS), 0);
+    xTimerStart(wifi_idle_timer, 0);
 }
 
 
@@ -466,9 +490,18 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                     }
                 }
 
-                // SECURITY CHECK: Only accept commands from authenticated connections
+                // SECURITY CHECK: Only accept commands from authenticated
+                // connections. Remotes blast throttle frames at ~13 Hz from
+                // the moment they connect, well before SMP completes — log
+                // once per second so the boot/pair window isn't a wall of
+                // warnings.
                 if (!is_authenticated) {
-                    ESP_LOGW(GATTS_TABLE_TAG, "Rejecting write from unauthenticated client!");
+                    static uint32_t last_log_ms = 0;
+                    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+                    if (now_ms - last_log_ms > 1000) {
+                        ESP_LOGD(GATTS_TABLE_TAG, "Rejecting writes from unauthenticated client (waiting for SMP)");
+                        last_log_ms = now_ms;
+                    }
                     break;
                 }
 
@@ -527,6 +560,8 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     	    throttle_start_timeout_monitor();
             bldc_interface_can_get_mcconf_temp(); // Fetch compact motor config for BLE telemetry
     	    memcpy(&spp_remote_bda,&p_data->connect.remote_bda,sizeof(esp_bd_addr_t));
+    	    if (wifi_idle_timer != NULL) xTimerStop(wifi_idle_timer, 0);
+    	    if (wifi_ap_is_running()) wifi_ap_stop();
     	    // Delete previous telemetry task if it leaked from a prior connection
     	    if (telemetry_task_handle != NULL) {
     	        vTaskDelete(telemetry_task_handle);
@@ -551,6 +586,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     	    if (adv_task_handle != NULL) {
     	        xTaskNotify(adv_task_handle, ADV_TASK_NOTIFY_REFRESH_ADV, eSetBits);
     	    }
+    	    wifi_idle_timer_kick();
     	    break;
     	case ESP_GATTS_OPEN_EVT:
     	    break;
@@ -657,6 +693,10 @@ esp_err_t ble_spp_server_start(void)
     esp_ble_gatts_app_register(ESP_SPP_APP_ID);
 
     xTaskCreate(adv_task, "ble_adv", 2048, NULL, 5, &adv_task_handle);
+    wifi_idle_timer = xTimerCreate("wifi_idle",
+                                   pdMS_TO_TICKS(WIFI_AP_IDLE_TIMEOUT_MS),
+                                   pdFALSE, NULL, wifi_idle_timer_cb);
+    wifi_idle_timer_kick();
 
     // Set local MTU
     ret = esp_ble_gatt_set_local_mtu(500);
@@ -693,6 +733,16 @@ esp_err_t ble_spp_server_start(void)
 
 bool ble_is_connected(void) {
     return is_connected;
+}
+
+void ble_refresh_advertising(void) {
+    if (adv_task_handle != NULL) {
+        xTaskNotify(adv_task_handle, ADV_TASK_NOTIFY_REFRESH_ADV, eSetBits);
+    }
+}
+
+float ble_get_trip_km(void) {
+    return trip_km;
 }
 
 bool ble_is_scanning(void) {

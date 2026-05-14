@@ -1,6 +1,7 @@
 #include <string.h>
 #include "esp_log.h"
 #include "esp_bt.h"
+#include "esp_system.h"
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -14,6 +15,7 @@
 #include "bldc_interface_can.h"
 #include "aux_output.h"
 #include "usb_serial.h"
+#include "wifi_ap.h"
 
 static const char *TAG = "MAIN";
 
@@ -93,6 +95,10 @@ mc_temp_config_t* get_stored_mc_temp_config(void) {
 void app_main(void) {
     esp_err_t ret;
 
+    // Print the reason for the most recent reset so we can tell crashes from
+    // brown-outs from clean reboots in the field log.
+    ESP_LOGW(TAG, "Reset reason: %d", (int)esp_reset_reason());
+
     ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -124,6 +130,10 @@ void app_main(void) {
     }
 
     ESP_LOGI(TAG, "BLE SPP server started successfully");
+
+    // Wi-Fi stack is initialized here so the SoftAP fallback can start quickly
+    // when the idle timer fires; the AP itself stays off until then.
+    wifi_ap_init();
 
     // Start USB serial task
     usb_serial_start_task();
