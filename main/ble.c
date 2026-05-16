@@ -491,7 +491,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                 }
 
                 // SECURITY CHECK: Only accept commands from authenticated
-                // connections. Remotes blast throttle frames at ~13 Hz from
+                // connections. Remotes blast throttle frames at ~50 Hz from
                 // the moment they connect, well before SMP completes — log
                 // once per second so the boot/pair window isn't a wall of
                 // warnings.
