@@ -7,7 +7,7 @@
 #include "esp_err.h"
 
 #define THROTTLE_TIMEOUT_MS 200  // 200ms timeout
-#define THROTTLE_NEUTRAL_VALUE 127
+#define THROTTLE_NEUTRAL_VALUE 128
 #define VESC_UPDATE_INTERVAL_MS 50
 
 // Function declarations
