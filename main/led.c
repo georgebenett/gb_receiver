@@ -12,6 +12,8 @@ static uint8_t current_duty = 0;
 void led_transition_task(void *pvParameters);
 static volatile uint8_t pending_target_duty = 0;
 static TaskHandle_t transition_task_handle = NULL;
+static bool current_connected_state = false;
+static bool connection_state_known = false;
 
 esp_err_t led_init(void)
 {
@@ -94,6 +96,14 @@ void led_transition_task(void *pvParameters)
 
 void led_set_connection_state(bool connected)
 {
+    // Ignore redundant calls (e.g. one per received packet) so an in-progress
+    // fade isn't constantly restarted and never allowed to complete.
+    if (connection_state_known && connected == current_connected_state) {
+        return;
+    }
+    connection_state_known = true;
+    current_connected_state = connected;
+
     pending_target_duty = connected ? LED_PWM_CONNECTED : LED_PWM_DISCONNECTED;
 
     if (transition_task_handle != NULL) {

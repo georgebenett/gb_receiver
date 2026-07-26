@@ -12,7 +12,7 @@
 
 // LED brightness levels (0-255)
 #define LED_PWM_DISCONNECTED 1    // Dim when disconnected
-#define LED_PWM_CONNECTED    10   // Brighter when connected
+#define LED_PWM_CONNECTED    100   // Brighter when connected
 
 // Transition configuration
 #define LED_TRANSITION_STEP_MS   10   // Time between brightness steps (faster updates)
