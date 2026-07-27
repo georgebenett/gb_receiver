@@ -23,7 +23,6 @@ static const char *TAG = "MAIN";
 static mc_values stored_values;
 static mc_temp_config_t stored_mc_temp_conf = {0};
 
-// Forward declarations
 mc_temp_config_t* get_stored_mc_temp_config(void);
 
 static void bldc_values_received(mc_values *values) {
@@ -128,7 +127,6 @@ void app_main(void) {
     ESP_ERROR_CHECK(aux_output_init());
     ESP_ERROR_CHECK(bms_uart_init());
 
-    // Initialize USB serial
     usb_serial_init();
 
     ret = ble_spp_server_init();
@@ -153,7 +151,6 @@ void app_main(void) {
     // when the idle timer fires; the AP itself stays off until then.
     wifi_ap_init();
 
-    // Start USB serial task
     usb_serial_start_task();
 
     // Initialize CAN interface for VESC communication

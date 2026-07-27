@@ -408,7 +408,6 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
         break;
     }
     case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
-        //advertising start complete event to indicate advertising start successfully or failed
         if((err = param->adv_start_cmpl.status) != ESP_BT_STATUS_SUCCESS) {
             ESP_LOGE(GATTS_TABLE_TAG, "Advertising start failed: %s", esp_err_to_name(err));
         }
@@ -417,7 +416,6 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
     // Security events
     case ESP_GAP_BLE_SEC_REQ_EVT:
         ESP_LOGI(GATTS_TABLE_TAG, "ESP_GAP_BLE_SEC_REQ_EVT");
-        // Accept the security request from the client
         esp_ble_gap_security_rsp(param->ble_security.ble_req.bd_addr, true);
         break;
 
@@ -622,7 +620,6 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
 {
     ESP_LOGD(GATTS_TABLE_TAG, "EVT %d, gatts if %d", event, gatts_if);
 
-    /* If event is register event, store the gatts_if for each profile */
     if (event == ESP_GATTS_REG_EVT) {
         if (param->reg.status == ESP_GATT_OK) {
             spp_profile_tab[SPP_PROFILE_APP_IDX].gatts_if = gatts_if;
@@ -653,21 +650,18 @@ esp_err_t ble_spp_server_init(void)
     // Release memory used by classic BT
     ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT));
 
-    // Initialize BT controller
     ret = esp_bt_controller_init(&bt_cfg);
     if (ret) {
         ESP_LOGE(GATTS_TABLE_TAG, "BT controller init failed: %s", esp_err_to_name(ret));
         return ret;
     }
 
-    // Enable BT controller in BLE mode
     ret = esp_bt_controller_enable(ESP_BT_MODE_BLE);
     if (ret) {
         ESP_LOGE(GATTS_TABLE_TAG, "BT controller enable failed: %s", esp_err_to_name(ret));
         return ret;
     }
 
-    // Initialize Bluedroid stack
     ret = esp_bluedroid_init();
     if (ret) {
         ESP_LOGE(GATTS_TABLE_TAG, "Bluedroid init failed: %s", esp_err_to_name(ret));
@@ -687,7 +681,6 @@ esp_err_t ble_spp_server_start(void)
 {
     esp_err_t ret;
 
-    // Register callbacks
     esp_ble_gatts_register_callback(gatts_event_handler);
     esp_ble_gap_register_callback(gap_event_handler);
     esp_ble_gatts_app_register(ESP_SPP_APP_ID);
@@ -698,14 +691,12 @@ esp_err_t ble_spp_server_start(void)
                                    pdFALSE, NULL, wifi_idle_timer_cb);
     wifi_idle_timer_kick();
 
-    // Set local MTU
     ret = esp_ble_gatt_set_local_mtu(500);
     if (ret) {
         ESP_LOGE(GATTS_TABLE_TAG, "Set local MTU failed: %s", esp_err_to_name(ret));
         return ret;
     }
 
-    // Configure BLE Security
     esp_ble_auth_req_t auth_req = ESP_LE_AUTH_REQ_SC_MITM_BOND;  // Secure Connections, MITM protection, Bonding
     esp_ble_io_cap_t io_cap = ESP_IO_CAP_OUT;  // Display only (server shows passkey)
     uint8_t key_size = 16;
@@ -1000,7 +991,6 @@ static void send_telemetry_task(void *pvParameters) {
             buffer[idx++] = (trip_km_x100 >> 16) & 0xFF;
             buffer[idx++] = (trip_km_x100 >> 24) & 0xFF;
 
-            // Send notification
             esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id,
                 spp_handle_table[SPP_IDX_SPP_DATA_NTY_VAL],
                 sizeof(buffer), buffer, false);

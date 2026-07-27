@@ -1,4 +1,3 @@
-// jiabaida_driver.c
 
 #include "bms.h"
 #include "string.h"
@@ -25,7 +24,6 @@ static void calculate_checksum(const uint8_t *data, size_t len, uint8_t *chk_hig
     *chk_low = checksum & 0xFF;
 }
 
-// Forward declarations of static functions
 static void bms_read_task(void *pvParameters);
 static void print_bms_values(uint8_t *data, size_t len);
 static esp_err_t send_command(uint8_t status, uint8_t cmd, const uint8_t *data, size_t data_len, uint8_t *response, size_t *response_len);
@@ -209,7 +207,6 @@ static void bms_read_task(void *pvParameters) {
     bool is_connected = true;
 
     while (1) {
-        // Read basic info
         bool basic_ok = false;
         if (bms_read_basic_info(response, &response_len) == ESP_OK) {
             if (is_valid_bms_response(response, response_len)) {

@@ -17,7 +17,6 @@ static bool connection_state_known = false;
 
 esp_err_t led_init(void)
 {
-    // Configure timer
     ledc_timer_config_t ledc_timer = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
         .duty_resolution = LED_PWM_RESOLUTION,
@@ -27,7 +26,6 @@ esp_err_t led_init(void)
     };
     ESP_ERROR_CHECK(ledc_timer_config(&ledc_timer));
 
-    // Configure channel
     ledc_channel_config_t ledc_channel = {
         .gpio_num = LED_PIN,
         .speed_mode = LEDC_LOW_SPEED_MODE,

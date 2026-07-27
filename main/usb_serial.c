@@ -20,21 +20,18 @@ extern mc_temp_config_t* get_stored_mc_temp_config(void);
 
 #define TAG "USB_SERIAL"
 
-// Binary protocol state machine variables
 static TaskHandle_t usb_task_handle = NULL;
 static packet_state_t rx_state = STATE_WAIT_START;
 static binary_packet_t rx_packet;
 static uint16_t rx_payload_index = 0;
 static uint16_t rx_crc_calculated = 0;
 
-// Streaming configuration
 static stream_config_t stream_config = {
     .enabled = false,
     .rate_hz = 10,  // Default 10Hz
     .last_send_ms = 0
 };
 
-// Forward declarations - binary protocol handlers
 static void usb_serial_task(void *pvParameters);
 static void handle_cmd_ping(const binary_packet_t* packet);
 static void handle_cmd_get_firmware_version(const binary_packet_t* packet);
@@ -78,7 +75,6 @@ void usb_serial_init(void)
         return;
     }
 
-    // Add target-specific initialization delay
     vTaskDelay(pdMS_TO_TICKS(USB_CDC_INIT_DELAY_MS));
 
     usb_serial_init_esp32c3();
@@ -86,7 +82,6 @@ void usb_serial_init(void)
     // Additional delay to ensure USB is fully ready
     vTaskDelay(pdMS_TO_TICKS(500));
 
-    // Initialize packet state machine
     rx_state = STATE_WAIT_START;
     rx_payload_index = 0;
     memset(&rx_packet, 0, sizeof(rx_packet));
@@ -136,7 +131,6 @@ static void usb_serial_task(void *pvParameters)
     int rx_len = 0;
 
     for (;;) {
-        // Handle streaming if enabled
         if (stream_config.enabled) {
             uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
             uint32_t interval_ms = 1000 / stream_config.rate_hz;
@@ -155,7 +149,6 @@ static void usb_serial_task(void *pvParameters)
 
         ESP_LOGD(TAG, "Received %d bytes", rx_len);
 
-        // Process each received byte
         for (int i = 0; i < rx_len; i++) {
             uint8_t data = rx_buffer[i];
 
@@ -181,12 +174,10 @@ static void usb_serial_task(void *pvParameters)
             case STATE_WAIT_LEN_MSB:
                 rx_packet.payload_length |= ((uint16_t)data << 8);
 
-                // Validate payload length
                 if (rx_packet.payload_length > PACKET_MAX_PAYLOAD_SIZE) {
                     ESP_LOGW(TAG, "Invalid payload length: %d", rx_packet.payload_length);
                     rx_state = STATE_WAIT_START;
                 } else if (rx_packet.payload_length == 0) {
-                    // No payload, go directly to CRC
                     rx_state = STATE_WAIT_CRC_LSB;
                 } else {
                     rx_state = STATE_WAIT_PAYLOAD;
@@ -218,7 +209,6 @@ static void usb_serial_task(void *pvParameters)
                 rx_crc_calculated = calculate_crc16(temp_crc_buffer, 3 + rx_packet.payload_length);
 
                 if (rx_crc_calculated == rx_packet.crc) {
-                    // Valid packet received, process it
                     ESP_LOGD(TAG, "Valid packet: CMD=0x%02X, LEN=%d",
                              rx_packet.cmd_id, rx_packet.payload_length);
                     usb_serial_process_packet(&rx_packet);
@@ -241,7 +231,6 @@ static void usb_serial_task(void *pvParameters)
     }
 }
 
-// Send a binary response packet
 void usb_serial_send_response(uint8_t cmd_id, const uint8_t* payload, uint16_t length) {
     if (length > PACKET_MAX_PAYLOAD_SIZE) {
         ESP_LOGE(TAG, "Payload too large: %d bytes", length);
@@ -267,13 +256,11 @@ void usb_serial_send_response(uint8_t cmd_id, const uint8_t* payload, uint16_t l
     packet[idx++] = crc & 0xFF;
     packet[idx++] = (crc >> 8) & 0xFF;
 
-    // Send packet
     usb_serial_jtag_write_bytes((const char*)packet, idx, pdMS_TO_TICKS(100));
 
     ESP_LOGD(TAG, "Sent response: CMD=0x%02X, LEN=%d, CRC=0x%04X", cmd_id, length, crc);
 }
 
-// Send ACK/NACK response
 void usb_serial_send_ack(uint8_t original_cmd, error_code_t error_code) {
     uint8_t payload[2];
     payload[0] = original_cmd;
@@ -281,7 +268,6 @@ void usb_serial_send_ack(uint8_t original_cmd, error_code_t error_code) {
     usb_serial_send_response(RSP_ACK, payload, 2);
 }
 
-// Send error response with message
 void usb_serial_send_error(error_code_t error_code, const char* message) {
     uint8_t payload[256];
     payload[0] = (uint8_t)error_code;
@@ -296,7 +282,6 @@ void usb_serial_send_error(error_code_t error_code, const char* message) {
     usb_serial_send_response(RSP_ERROR, payload, 1 + msg_len);
 }
 
-// Process received binary packet
 void usb_serial_process_packet(const binary_packet_t* packet) {
     switch (packet->cmd_id) {
         case CMD_PING:
@@ -348,10 +333,7 @@ void usb_serial_process_packet(const binary_packet_t* packet) {
     }
 }
 
-// ========== BINARY PROTOCOL COMMAND HANDLERS ==========
-
 static void handle_cmd_ping(const binary_packet_t* packet) {
-    // Simple ping response - just ACK
     usb_serial_send_ack(CMD_PING, ERR_OK);
 }
 
@@ -359,7 +341,6 @@ static void handle_cmd_get_firmware_version(const binary_packet_t* packet) {
     uint8_t payload[256];
     uint16_t idx = 0;
 
-    // Parse version string to get individual components
     uint8_t major = 0, minor = 0, patch = 0;
     sscanf(FW_VERSION, "%hhu.%hhu.%hhu", &major, &minor, &patch);
     payload[idx++] = major;
@@ -434,7 +415,6 @@ static void handle_cmd_start_streaming(const binary_packet_t* packet) {
         rate_hz = packet->payload[0] | (packet->payload[1] << 8);
     }
 
-    // Validate rate (1Hz - 100Hz)
     if (rate_hz < 1) rate_hz = 1;
     if (rate_hz > 100) rate_hz = 100;
 
@@ -459,7 +439,6 @@ static void handle_cmd_set_stream_rate(const binary_packet_t* packet) {
     // Payload: [rate_hz_lsb][rate_hz_msb] (little-endian)
     uint16_t rate_hz = packet->payload[0] | (packet->payload[1] << 8);
 
-    // Validate rate (1Hz - 100Hz)
     if (rate_hz < 1 || rate_hz > 100) {
         usb_serial_send_ack(CMD_SET_STREAM_RATE, ERR_OUT_OF_RANGE);
         return;
@@ -690,8 +669,6 @@ static void handle_cmd_get_paired_list(const binary_packet_t* packet) {
     memcpy(&payload[idx], connected_mac, 6); idx += 6;
     usb_serial_send_response(RSP_PAIRED_LIST, payload, idx);
 }
-
-// ========== COREDUMP HANDLERS ==========
 
 static void handle_cmd_check_coredump(const binary_packet_t *packet) {
     (void)packet;

@@ -70,11 +70,9 @@ esp_err_t aux_output_init(void) {
         return ret;
     }
 
-    // Restore saved state
     aux_output_load_state();
     gpio_set_level(AUX_OUTPUT_GPIO, aux_output_state);
 
-    // Configure PWM for aux output LED
     // Note: Timer is shared with main LED
     ledc_channel_config_t ledc_channel = {
         .gpio_num = AUX_OUTPUT_LED_PIN,
@@ -92,7 +90,6 @@ esp_err_t aux_output_init(void) {
         return ret;
     }
 
-    // Set initial PWM duty to 0 (OFF)
     ledc_set_duty(LEDC_LOW_SPEED_MODE, AUX_LED_PWM_CHANNEL, 0);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, AUX_LED_PWM_CHANNEL);
 
@@ -106,7 +103,6 @@ void aux_output_set(uint8_t state) {
     gpio_set_level(AUX_OUTPUT_GPIO, aux_output_state);
     aux_output_save_state();
 
-    // Update PWM to reflect the new state
     aux_output_update_pwm();
 }
 
@@ -124,7 +120,6 @@ void aux_output_update_pwm(void) {
         duty_scaled = 0;
     }
 
-    // Set LEDC duty
     ledc_set_duty(LEDC_LOW_SPEED_MODE, AUX_LED_PWM_CHANNEL, duty_scaled);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, AUX_LED_PWM_CHANNEL);
 }

@@ -32,7 +32,6 @@ esp_err_t throttle_init(void)
 
     ESP_LOGI(THROTTLE_TAG, "Throttle initialized");
 
-    // Create the timeout timer
     throttle_timeout_timer = xTimerCreate(
         "throttle_timeout",
         pdMS_TO_TICKS(THROTTLE_TIMEOUT_MS),
