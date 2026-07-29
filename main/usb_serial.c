@@ -48,6 +48,21 @@ static void handle_cmd_get_paired_list(const binary_packet_t* packet);
 static void handle_cmd_check_coredump(const binary_packet_t* packet);
 static void handle_cmd_get_coredump(const binary_packet_t* packet);
 
+/* Little-endian payload writers. Every field on the wire is little-endian;
+ * these return the byte count so call sites read as
+ * `idx += put_u32(&payload[idx], value);`. */
+static uint16_t put_u16(uint8_t* p, uint16_t v) {
+    p[0] = v & 0xFF;
+    p[1] = (v >> 8) & 0xFF;
+    return 2;
+}
+
+static uint16_t put_u32(uint8_t* p, uint32_t v) {
+    put_u16(p, (uint16_t)(v & 0xFFFF));
+    put_u16(p + 2, (uint16_t)(v >> 16));
+    return 4;
+}
+
 // CRC-16-CCITT calculation (polynomial: 0x1021)
 uint16_t calculate_crc16(const uint8_t* data, uint16_t length) {
     uint16_t crc = 0xFFFF;
@@ -268,20 +283,6 @@ void usb_serial_send_ack(uint8_t original_cmd, error_code_t error_code) {
     usb_serial_send_response(RSP_ACK, payload, 2);
 }
 
-void usb_serial_send_error(error_code_t error_code, const char* message) {
-    uint8_t payload[256];
-    payload[0] = (uint8_t)error_code;
-
-    uint16_t msg_len = 0;
-    if (message != NULL) {
-        msg_len = strlen(message);
-        if (msg_len > 255) msg_len = 255;
-        memcpy(&payload[1], message, msg_len);
-    }
-
-    usb_serial_send_response(RSP_ERROR, payload, 1 + msg_len);
-}
-
 void usb_serial_process_packet(const binary_packet_t* packet) {
     switch (packet->cmd_id) {
         case CMD_PING:
@@ -382,9 +383,7 @@ static void handle_cmd_get_config(const binary_packet_t* packet) {
     if (ble_get_paired_count() > 0)  flags |= 0x04;
     payload[idx++] = flags;
 
-    uint16_t throttle_value = throttle_get_value();
-    payload[idx++] = throttle_value & 0xFF;
-    payload[idx++] = (throttle_value >> 8) & 0xFF;
+    idx += put_u16(&payload[idx], throttle_get_value());
 
     // Compact motor configuration (motor poles, gear ratio, wheel diameter)
     mc_temp_config_t* mc_temp_conf = get_stored_mc_temp_config();
@@ -399,10 +398,8 @@ static void handle_cmd_get_config(const binary_packet_t* packet) {
     }
 
     payload[idx++] = motor_poles;
-    payload[idx++] = gear_ratio_scaled & 0xFF;
-    payload[idx++] = (gear_ratio_scaled >> 8) & 0xFF;
-    payload[idx++] = wheel_diameter_scaled & 0xFF;
-    payload[idx++] = (wheel_diameter_scaled >> 8) & 0xFF;
+    idx += put_u16(&payload[idx], gear_ratio_scaled);
+    idx += put_u16(&payload[idx], wheel_diameter_scaled);
 
     usb_serial_send_response(RSP_CONFIG, payload, idx);
 }
@@ -472,11 +469,7 @@ void usb_serial_send_stream_data(void) {
     uint16_t idx = 0;
 
     // Timestamp (4 bytes, little-endian)
-    uint32_t timestamp_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
-    payload[idx++] = (timestamp_ms >> 0) & 0xFF;
-    payload[idx++] = (timestamp_ms >> 8) & 0xFF;
-    payload[idx++] = (timestamp_ms >> 16) & 0xFF;
-    payload[idx++] = (timestamp_ms >> 24) & 0xFF;
+    idx += put_u32(&payload[idx], (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS));
 
     // flags: bit0 connected, bit1 scanning, bit2 paired_count>0
     uint8_t flags = 0;
@@ -486,49 +479,20 @@ void usb_serial_send_stream_data(void) {
     payload[idx++] = flags;
 
     // Current throttle value from BLE (2 bytes, little-endian)
-    uint16_t throttle_value = throttle_get_value();
-    payload[idx++] = throttle_value & 0xFF;
-    payload[idx++] = (throttle_value >> 8) & 0xFF;
+    idx += put_u16(&payload[idx], throttle_get_value());
 
     // VESC data (if available)
     mc_values* vesc_values = get_stored_vesc_values();
     if (vesc_values != NULL) {
-        // Voltage (2 bytes, little-endian, scaled by 100)
-        int16_t voltage = (int16_t)(vesc_values->v_in * 100);
-        payload[idx++] = voltage & 0xFF;
-        payload[idx++] = (voltage >> 8) & 0xFF;
-
-        // Current motor (2 bytes, little-endian, scaled by 100)
-        int16_t current_motor = (int16_t)(vesc_values->current_motor * 100);
-        payload[idx++] = current_motor & 0xFF;
-        payload[idx++] = (current_motor >> 8) & 0xFF;
-
-        // Current input (2 bytes, little-endian, scaled by 100)
-        int16_t current_input = (int16_t)(vesc_values->current_in * 100);
-        payload[idx++] = current_input & 0xFF;
-        payload[idx++] = (current_input >> 8) & 0xFF;
-
-        // Duty cycle (2 bytes, little-endian, scaled by 1000)
-        int16_t duty = (int16_t)(vesc_values->duty_now * 1000);
-        payload[idx++] = duty & 0xFF;
-        payload[idx++] = (duty >> 8) & 0xFF;
-
-        // RPM (4 bytes, little-endian)
-        int32_t rpm = (int32_t)vesc_values->rpm;
-        payload[idx++] = rpm & 0xFF;
-        payload[idx++] = (rpm >> 8) & 0xFF;
-        payload[idx++] = (rpm >> 16) & 0xFF;
-        payload[idx++] = (rpm >> 24) & 0xFF;
-
-        // Temperature MOSFET (2 bytes, little-endian, scaled by 100)
-        int16_t temp_mos = (int16_t)(vesc_values->temp_mos * 100);
-        payload[idx++] = temp_mos & 0xFF;
-        payload[idx++] = (temp_mos >> 8) & 0xFF;
-
-        // Temperature motor (2 bytes, little-endian, scaled by 100)
-        int16_t temp_motor = (int16_t)(vesc_values->temp_motor * 100);
-        payload[idx++] = temp_motor & 0xFF;
-        payload[idx++] = (temp_motor >> 8) & 0xFF;
+        // voltage, current_motor, current_in (x100), duty (x1000),
+        // rpm (int32), temp_mos, temp_motor (x100) — 16 bytes
+        idx += put_u16(&payload[idx], (int16_t)(vesc_values->v_in * 100));
+        idx += put_u16(&payload[idx], (int16_t)(vesc_values->current_motor * 100));
+        idx += put_u16(&payload[idx], (int16_t)(vesc_values->current_in * 100));
+        idx += put_u16(&payload[idx], (int16_t)(vesc_values->duty_now * 1000));
+        idx += put_u32(&payload[idx], (uint32_t)(int32_t)vesc_values->rpm);
+        idx += put_u16(&payload[idx], (int16_t)(vesc_values->temp_mos * 100));
+        idx += put_u16(&payload[idx], (int16_t)(vesc_values->temp_motor * 100));
     } else {
         // No VESC data available - send zeros (16 bytes total)
         for (int i = 0; i < 16; i++) {
@@ -539,39 +503,19 @@ void usb_serial_send_stream_data(void) {
     // BMS data (if available)
     bms_values_t* bms_values = get_stored_bms_values();
     if (bms_values != NULL) {
-        // Total voltage (2 bytes, little-endian, scaled by 100)
-        int16_t bms_voltage = (int16_t)(bms_values->total_voltage * 100);
-        payload[idx++] = bms_voltage & 0xFF;
-        payload[idx++] = (bms_voltage >> 8) & 0xFF;
-
-        // Current (2 bytes, little-endian, scaled by 100)
-        int16_t bms_current = (int16_t)(bms_values->current * 100);
-        payload[idx++] = bms_current & 0xFF;
-        payload[idx++] = (bms_current >> 8) & 0xFF;
-
-        // Remaining capacity (2 bytes, little-endian, scaled by 100)
-        int16_t remaining_cap = (int16_t)(bms_values->remaining_capacity * 100);
-        payload[idx++] = remaining_cap & 0xFF;
-        payload[idx++] = (remaining_cap >> 8) & 0xFF;
-
-        // Nominal capacity (2 bytes, little-endian, scaled by 100)
-        int16_t nominal_cap = (int16_t)(bms_values->nominal_capacity * 100);
-        payload[idx++] = nominal_cap & 0xFF;
-        payload[idx++] = (nominal_cap >> 8) & 0xFF;
-
-        // Number of cells (1 byte)
+        // total_voltage, current, remaining/nominal capacity (x100)
+        idx += put_u16(&payload[idx], (int16_t)(bms_values->total_voltage * 100));
+        idx += put_u16(&payload[idx], (int16_t)(bms_values->current * 100));
+        idx += put_u16(&payload[idx], (int16_t)(bms_values->remaining_capacity * 100));
+        idx += put_u16(&payload[idx], (int16_t)(bms_values->nominal_capacity * 100));
         payload[idx++] = bms_values->num_cells;
 
-        // Cell voltages (2 bytes each, little-endian, scaled by 1000, up to 16 cells)
+        // 16 cell voltages (mV), zero-padded past num_cells
         for (int i = 0; i < 16; i++) {
-            int16_t cell_voltage;
-            if (i < bms_values->num_cells) {
-                cell_voltage = (int16_t)(bms_values->cell_voltages[i] * 1000);
-            } else {
-                cell_voltage = 0;
-            }
-            payload[idx++] = cell_voltage & 0xFF;
-            payload[idx++] = (cell_voltage >> 8) & 0xFF;
+            int16_t cell_mv = (i < bms_values->num_cells)
+                                  ? (int16_t)(bms_values->cell_voltages[i] * 1000)
+                                  : 0;
+            idx += put_u16(&payload[idx], cell_mv);
         }
     } else {
         // No BMS data available - send zeros (8 bytes for basic + 1 for num_cells + 32 for cells = 41 bytes)
@@ -593,10 +537,8 @@ void usb_serial_send_stream_data(void) {
     }
 
     payload[idx++] = motor_poles;
-    payload[idx++] = gear_ratio_scaled & 0xFF;
-    payload[idx++] = (gear_ratio_scaled >> 8) & 0xFF;
-    payload[idx++] = wheel_diameter_scaled & 0xFF;
-    payload[idx++] = (wheel_diameter_scaled >> 8) & 0xFF;
+    idx += put_u16(&payload[idx], gear_ratio_scaled);
+    idx += put_u16(&payload[idx], wheel_diameter_scaled);
 
     usb_serial_send_response(RSP_STREAM_DATA, payload, idx);
 }
@@ -718,8 +660,7 @@ static void handle_cmd_check_coredump(const binary_packet_t *packet) {
     uint8_t payload[3 + 16];
     uint16_t idx = 0;
     payload[idx++] = has_coredump ? 1 : 0;
-    payload[idx++] = (reported_size >> 0) & 0xFF;
-    payload[idx++] = (reported_size >> 8) & 0xFF;
+    idx += put_u16(&payload[idx], (uint16_t)reported_size);
     for (int i = 0; i < 16; i++) {
         payload[idx++] = check_buf[i];
     }
@@ -755,10 +696,8 @@ static void handle_cmd_get_coredump(const binary_packet_t *packet) {
 
     uint8_t payload[PACKET_MAX_PAYLOAD_SIZE];
     uint16_t idx = 0;
-    payload[idx++] = (chunk_offset >> 0) & 0xFF;
-    payload[idx++] = (chunk_offset >> 8) & 0xFF;
-    payload[idx++] = (chunk_size >> 0) & 0xFF;
-    payload[idx++] = (chunk_size >> 8) & 0xFF;
+    idx += put_u16(&payload[idx], chunk_offset);
+    idx += put_u16(&payload[idx], chunk_size);
 
     esp_err_t read_err = esp_partition_read(part, chunk_offset, &payload[idx], chunk_size);
     if (read_err != ESP_OK) {

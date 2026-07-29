@@ -8,8 +8,6 @@
 
 // ESP32-C3 specific USB CDC settings
 #define USB_CDC_ENABLED 1
-#define USB_CDC_USE_PRIMARY_CONSOLE 1
-#define USB_CDC_USE_SECONDARY_CONSOLE 0
 #define USB_CDC_INIT_DELAY_MS 100
 #define USB_CDC_TASK_DELAY_MS 10
 #define USB_CDC_BUFFER_SIZE 2048
@@ -17,8 +15,6 @@
 // Binary Protocol Configuration
 #define PACKET_START_BYTE       0xAA
 #define PACKET_MAX_PAYLOAD_SIZE 512
-#define PACKET_HEADER_SIZE      5    // START(1) + CMD(1) + LEN(2) + CRC(2) = 6, but -CRC = 4, +payload = varies
-#define PACKET_MIN_SIZE         6    // START + CMD + LEN(2) + CRC(2)
 
 // Binary Protocol Packet Structure:
 // [START_BYTE] [CMD_ID] [LENGTH_LSB] [LENGTH_MSB] [PAYLOAD...] [CRC16_LSB] [CRC16_MSB]
@@ -103,7 +99,6 @@ void usb_serial_init_esp32c3(void);
 void usb_serial_process_packet(const binary_packet_t* packet);
 void usb_serial_send_response(uint8_t cmd_id, const uint8_t* payload, uint16_t length);
 void usb_serial_send_ack(uint8_t original_cmd, error_code_t error_code);
-void usb_serial_send_error(error_code_t error_code, const char* message);
 
 void usb_serial_start_streaming(uint16_t rate_hz);
 void usb_serial_stop_streaming(void);
