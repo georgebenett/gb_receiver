@@ -26,26 +26,13 @@ static mc_temp_config_t stored_mc_temp_conf = {0};
 mc_temp_config_t* get_stored_mc_temp_config(void);
 
 static void bldc_values_received(mc_values *values) {
-    if (values->v_in > 1.0f) {
-        stored_values.v_in = values->v_in;
+    float last_good_v_in = stored_values.v_in;
+    stored_values = *values;
+    // A v_in at or below 1 V means the VESC did not report it in this frame —
+    // keep the last good reading so the UI doesn't flicker to zero.
+    if (values->v_in <= 1.0f) {
+        stored_values.v_in = last_good_v_in;
     }
-    stored_values.temp_mos = values->temp_mos;
-    stored_values.temp_motor = values->temp_motor;
-    stored_values.current_motor = values->current_motor;
-    stored_values.current_in = values->current_in;
-    stored_values.id = values->id;
-    stored_values.iq = values->iq;
-    stored_values.rpm = values->rpm;
-    stored_values.duty_now = values->duty_now;
-    stored_values.amp_hours = values->amp_hours;
-    stored_values.amp_hours_charged = values->amp_hours_charged;
-    stored_values.watt_hours = values->watt_hours;
-    stored_values.watt_hours_charged = values->watt_hours_charged;
-    stored_values.tachometer = values->tachometer;
-    stored_values.tachometer_abs = values->tachometer_abs;
-    stored_values.fault_code = values->fault_code;
-    stored_values.pid_pos = values->pid_pos;
-    stored_values.vesc_id = values->vesc_id;
 }
 
 static void mcconf_temp_received(mc_temp_config_t *conf) {
