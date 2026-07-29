@@ -11,11 +11,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
-#define spp_sprintf(s,...)         sprintf((char*)(s), ##__VA_ARGS__)
 #define SPP_DATA_MAX_LEN           (512)
 #define SPP_CMD_MAX_LEN            (20)
 #define SPP_STATUS_MAX_LEN         (20)
-#define SPP_DATA_BUFF_MAX_LEN      (2*1024)
 ///Attributes State Machine
 enum{
     SPP_IDX_SVC,

@@ -46,8 +46,6 @@ extern mc_temp_config_t* get_stored_mc_temp_config(void);
 #define TRIP_NVS_KEY_KM      "trip_km"
 #define TRIP_NVS_SAVE_INTERVAL_KM 0.1f  // save every 100 meters
 
-#define SPP_PROFILE_NUM             1
-#define SPP_PROFILE_APP_IDX         0
 #define ESP_SPP_APP_ID              0x56
 #define SAMPLE_DEVICE_NAME          CLIENT_NAME
 #define SPP_SVC_INST_ID             0
@@ -62,6 +60,20 @@ static const uint16_t spp_service_uuid = 0xABF0;
 #define ESP_GATT_UUID_SPP_DATA_NOTIFY       0xABF2
 #define ESP_GATT_UUID_SPP_COMMAND_RECEIVE   0xABF3
 #define ESP_GATT_UUID_SPP_COMMAND_NOTIFY    0xABF4
+
+/* Little-endian writers for the telemetry frame. Return the byte count so the
+ * packer reads as `idx += put_u16(&buffer[idx], value);`. */
+static uint16_t put_u16(uint8_t *p, uint16_t v) {
+    p[0] = v & 0xFF;
+    p[1] = (v >> 8) & 0xFF;
+    return 2;
+}
+
+static uint16_t put_u32(uint8_t *p, uint32_t v) {
+    put_u16(p, (uint16_t)(v & 0xFFFF));
+    put_u16(p + 2, (uint16_t)(v >> 16));
+    return 4;
+}
 
 static void send_telemetry_task(void *pvParameters);
 static void trip_nvs_load(void);
@@ -116,30 +128,7 @@ static esp_ble_adv_params_t spp_adv_params = {
     .adv_filter_policy  = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
 };
 
-struct gatts_profile_inst {
-    esp_gatts_cb_t gatts_cb;
-    uint16_t gatts_if;
-    uint16_t app_id;
-    uint16_t conn_id;
-    uint16_t service_handle;
-    esp_gatt_srvc_id_t service_id;
-    uint16_t char_handle;
-    esp_bt_uuid_t char_uuid;
-    esp_gatt_perm_t perm;
-    esp_gatt_char_prop_t property;
-    uint16_t descr_handle;
-    esp_bt_uuid_t descr_uuid;
-};
-
 static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param);
-
-/* One gatt-based profile one app_id and one gatts_if, this array will store the gatts_if returned by ESP_GATTS_REG_EVT */
-static struct gatts_profile_inst spp_profile_tab[SPP_PROFILE_NUM] = {
-    [SPP_PROFILE_APP_IDX] = {
-        .gatts_cb = gatts_profile_event_handler,
-        .gatts_if = ESP_GATT_IF_NONE,       /* Not get the gatt_if, so initial is ESP_GATT_IF_NONE */
-    },
-};
 
 /*
  *  SPP PROFILE ATTRIBUTES
@@ -620,26 +609,13 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
 {
     ESP_LOGD(GATTS_TABLE_TAG, "EVT %d, gatts if %d", event, gatts_if);
 
-    if (event == ESP_GATTS_REG_EVT) {
-        if (param->reg.status == ESP_GATT_OK) {
-            spp_profile_tab[SPP_PROFILE_APP_IDX].gatts_if = gatts_if;
-        } else {
-            ESP_LOGI(GATTS_TABLE_TAG, "Reg app failed, app_id %04x, status %d",param->reg.app_id, param->reg.status);
-            return;
-        }
+    if (event == ESP_GATTS_REG_EVT && param->reg.status != ESP_GATT_OK) {
+        ESP_LOGI(GATTS_TABLE_TAG, "Reg app failed, app_id %04x, status %d",
+                 param->reg.app_id, param->reg.status);
+        return;
     }
 
-    do {
-        int idx;
-        for (idx = 0; idx < SPP_PROFILE_NUM; idx++) {
-            if (gatts_if == ESP_GATT_IF_NONE || /* ESP_GATT_IF_NONE, not specify a certain gatt_if, need to call every profile cb function */
-                    gatts_if == spp_profile_tab[idx].gatts_if) {
-                if (spp_profile_tab[idx].gatts_cb) {
-                    spp_profile_tab[idx].gatts_cb(event, gatts_if, param);
-                }
-            }
-        }
-    } while (0);
+    gatts_profile_event_handler(event, gatts_if, param);
 }
 
 esp_err_t ble_spp_server_init(void)
@@ -877,69 +853,29 @@ static void send_telemetry_task(void *pvParameters) {
             uint8_t buffer[65];
             int idx = 0;
 
-            // Pack VESC data
-            int16_t temp_mos = (int16_t)(vesc_values->temp_mos * 100);
-            int16_t temp_motor = (int16_t)(vesc_values->temp_motor * 100);
-            int16_t current_motor = (int16_t)(vesc_values->current_motor * 100);
-            int16_t current_in = (int16_t)(vesc_values->current_in * 100);
-            int32_t rpm = (int32_t)vesc_values->rpm;
-            int16_t voltage = (int16_t)(vesc_values->v_in * 100);
+            // VESC block, bytes 0-13
+            idx += put_u16(&buffer[idx], (int16_t)(vesc_values->temp_mos * 100));
+            idx += put_u16(&buffer[idx], (int16_t)(vesc_values->temp_motor * 100));
+            idx += put_u16(&buffer[idx], (int16_t)(vesc_values->current_motor * 100));
+            idx += put_u16(&buffer[idx], (int16_t)(vesc_values->current_in * 100));
+            idx += put_u32(&buffer[idx], (uint32_t)(int32_t)vesc_values->rpm);
+            idx += put_u16(&buffer[idx], (int16_t)(vesc_values->v_in * 100));
 
-            // Pack temp_mos (little-endian)
-            buffer[idx++] = temp_mos & 0xFF;
-            buffer[idx++] = (temp_mos >> 8) & 0xFF;
-
-            // Pack temp_motor (little-endian)
-            buffer[idx++] = temp_motor & 0xFF;
-            buffer[idx++] = (temp_motor >> 8) & 0xFF;
-
-            // Pack current_motor (little-endian)
-            buffer[idx++] = current_motor & 0xFF;
-            buffer[idx++] = (current_motor >> 8) & 0xFF;
-
-            // Pack current_in (little-endian)
-            buffer[idx++] = current_in & 0xFF;
-            buffer[idx++] = (current_in >> 8) & 0xFF;
-
-            // Pack RPM (little-endian)
-            buffer[idx++] = rpm & 0xFF;
-            buffer[idx++] = (rpm >> 8) & 0xFF;
-            buffer[idx++] = (rpm >> 16) & 0xFF;
-            buffer[idx++] = (rpm >> 24) & 0xFF;
-
-            // Pack voltage (little-endian)
-            buffer[idx++] = voltage & 0xFF;
-            buffer[idx++] = (voltage >> 8) & 0xFF;
-
-            // Pack BMS data
-            int16_t bms_total_voltage = (int16_t)(bms_values->total_voltage * 100);
-            int16_t bms_current = (int16_t)(bms_values->current * 100);
-            int16_t remaining_capacity = (int16_t)(bms_values->remaining_capacity * 100);
-            int16_t nominal_capacity = (int16_t)(bms_values->nominal_capacity * 100);
-
-            // Pack BMS values (little-endian)
-            buffer[idx++] = bms_total_voltage & 0xFF;
-            buffer[idx++] = (bms_total_voltage >> 8) & 0xFF;
-            buffer[idx++] = bms_current & 0xFF;
-            buffer[idx++] = (bms_current >> 8) & 0xFF;
-            buffer[idx++] = remaining_capacity & 0xFF;
-            buffer[idx++] = (remaining_capacity >> 8) & 0xFF;
-            buffer[idx++] = nominal_capacity & 0xFF;
-            buffer[idx++] = (nominal_capacity >> 8) & 0xFF;
-
-            // Pack number of cells
+            // BMS block, bytes 14-54
+            idx += put_u16(&buffer[idx], (int16_t)(bms_values->total_voltage * 100));
+            idx += put_u16(&buffer[idx], (int16_t)(bms_values->current * 100));
+            idx += put_u16(&buffer[idx], (int16_t)(bms_values->remaining_capacity * 100));
+            idx += put_u16(&buffer[idx], (int16_t)(bms_values->nominal_capacity * 100));
             buffer[idx++] = bms_values->num_cells;
 
-            // Pack cell voltages (little-endian)
+            // 16 cell voltages (mV), zero-padded past num_cells. The remote no
+            // longer displays these, but they hold the frame layout — later
+            // fields are read by fixed offset.
             for (int i = 0; i < 16; i++) {
-                int16_t cell_voltage;
-                if (i < bms_values->num_cells) {
-                    cell_voltage = (int16_t)(bms_values->cell_voltages[i] * 1000);
-                } else {
-                    cell_voltage = 0;
-                }
-                buffer[idx++] = cell_voltage & 0xFF;
-                buffer[idx++] = (cell_voltage >> 8) & 0xFF;
+                int16_t cell_mv = (i < bms_values->num_cells)
+                                      ? (int16_t)(bms_values->cell_voltages[i] * 1000)
+                                      : 0;
+                idx += put_u16(&buffer[idx], cell_mv);
             }
 
             // Pack compact mcconf temp data (motor poles, gear ratio, wheel diameter)
@@ -955,10 +891,8 @@ static void send_telemetry_task(void *pvParameters) {
             }
 
             buffer[idx++] = motor_poles;
-            buffer[idx++] = gear_ratio_scaled & 0xFF;
-            buffer[idx++] = (gear_ratio_scaled >> 8) & 0xFF;
-            buffer[idx++] = wheel_diameter_scaled & 0xFF;
-            buffer[idx++] = (wheel_diameter_scaled >> 8) & 0xFF;
+            idx += put_u16(&buffer[idx], gear_ratio_scaled);
+            idx += put_u16(&buffer[idx], wheel_diameter_scaled);
 
             // Pack aux output state (byte 60)
             buffer[idx++] = aux_output_get_state();
@@ -985,11 +919,7 @@ static void send_telemetry_task(void *pvParameters) {
                 trip_km_nvs_committed = trip_km;
             }
 
-            int32_t trip_km_x100 = (int32_t)(trip_km * 100.0f);
-            buffer[idx++] = trip_km_x100 & 0xFF;
-            buffer[idx++] = (trip_km_x100 >> 8) & 0xFF;
-            buffer[idx++] = (trip_km_x100 >> 16) & 0xFF;
-            buffer[idx++] = (trip_km_x100 >> 24) & 0xFF;
+            idx += put_u32(&buffer[idx], (uint32_t)(int32_t)(trip_km * 100.0f));
 
             esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id,
                 spp_handle_table[SPP_IDX_SPP_DATA_NTY_VAL],
