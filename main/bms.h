@@ -30,19 +30,8 @@ typedef struct {
 esp_err_t bms_uart_init(void);
 esp_err_t bms_read_basic_info(uint8_t *response, size_t *response_len);
 esp_err_t bms_read_cell_voltages(uint8_t *response, size_t *response_len);
-esp_err_t bms_read_bms_version(uint8_t *response, size_t *response_len);
 
 // Add declaration for get_stored_vesc_values
 mc_values* get_stored_vesc_values(void);
 bms_values_t* get_stored_bms_values(void);
 
-
-// MOS control types
-typedef enum {
-    MOS_RELEASE = 0x00,
-    MOS_CHARGE_OFF = 0x01,
-    MOS_DISCHARGE_OFF = 0x02,
-    MOS_BOTH_OFF = 0x03
-} mos_control_t;
-
-esp_err_t bms_control_mos(mos_control_t mode);

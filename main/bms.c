@@ -14,14 +14,13 @@ static bms_values_t stored_bms_values = {0};
 // Largest BMS response is cell voltages for 16S: 4 + 32 + 3 = 39 bytes. 64 is safe.
 #define BMS_RESPONSE_BUF 64
 
-static void calculate_checksum(const uint8_t *data, size_t len, uint8_t *chk_high, uint8_t *chk_low) {
+/** BMS frame checksum: two's complement of the sum over [status..payload]. */
+static uint16_t bms_checksum(const uint8_t *data, size_t len) {
     uint16_t sum = 0;
     for (size_t i = 0; i < len; i++) {
         sum += data[i];
     }
-    uint16_t checksum = ~sum + 1;
-    *chk_high = (checksum >> 8) & 0xFF;
-    *chk_low = checksum & 0xFF;
+    return (uint16_t)(~sum + 1);
 }
 
 static void bms_read_task(void *pvParameters);
@@ -34,9 +33,7 @@ static bool is_valid_bms_response(const uint8_t *data, size_t len) {
     if (data[0] != START_BYTE || data[len - 1] != STOP_BYTE) return false;
     uint8_t data_len = data[3];
     if (len < (size_t)(4 + data_len + 3)) return false;  // status, cmd, len, payload, chk_hi, chk_lo, stop
-    uint16_t sum = 0;
-    for (size_t i = 2; i < 4 + (size_t)data_len; i++) sum += data[i];
-    uint16_t expected = ~sum + 1;
+    uint16_t expected = bms_checksum(&data[2], (size_t)data_len + 2);
     uint16_t got = ((uint16_t)data[len - 3] << 8) | data[len - 2];
     return (expected == got);
 }
@@ -97,10 +94,9 @@ static esp_err_t send_command(uint8_t status, uint8_t cmd, const uint8_t *data, 
         idx += data_len;
     }
 
-    uint8_t chk_high, chk_low;
-    calculate_checksum(&frame[2], data_len + 2, &chk_high, &chk_low);
-    frame[idx++] = chk_high;
-    frame[idx++] = chk_low;
+    uint16_t chk = bms_checksum(&frame[2], data_len + 2);
+    frame[idx++] = (chk >> 8) & 0xFF;
+    frame[idx++] = chk & 0xFF;
     frame[idx++] = STOP_BYTE;
 
     uart_flush_input(BMS_UART_PORT);
@@ -140,17 +136,6 @@ esp_err_t bms_read_cell_voltages(uint8_t *response, size_t *response_len) {
     return send_command(0xA5, 0x04, NULL, 0, response, response_len);
 }
 
-esp_err_t bms_read_bms_version(uint8_t *response, size_t *response_len) {
-    return send_command(0xA5, 0x05, NULL, 0, response, response_len);
-}
-
-esp_err_t bms_control_mos(mos_control_t mode) {
-    uint8_t data[2] = {0x00, mode};
-    uint8_t response[BMS_RESPONSE_BUF];
-    size_t response_len = 0;
-    return send_command(0x5A, 0xE1, data, sizeof(data), response, &response_len);
-}
-
 static void print_bms_values(uint8_t *data, size_t len) {
     if (len < 4) {
         ESP_LOGE(TAG, "Invalid packet length");
@@ -184,12 +169,6 @@ static void print_bms_values(uint8_t *data, size_t len) {
                 stored_bms_values.current = ((int16_t)(data[6] << 8 | data[7])) / 100.0f;
                 stored_bms_values.remaining_capacity = (data[8] << 8 | data[9]) / 100.0f;
                 stored_bms_values.nominal_capacity = (data[10] << 8 | data[11]) / 100.0f;
-            }
-            break;
-
-        case 0x05:  // Version Response
-            if (len >= 8) {
-                // Version info handling (if needed)
             }
             break;
 
@@ -245,13 +224,10 @@ static void bms_read_task(void *pvParameters) {
                 }
             }
 
+            // Keeps the poll cadence unchanged now that the (unparsed) version
+            // read that used to sit here is gone. The BMS is a 9600-baud device;
+            // there is nothing to gain from hammering it faster.
             vTaskDelay(pdMS_TO_TICKS(50));
-
-            static uint8_t version_counter = 0;
-            if (++version_counter >= 10) {
-                bms_read_bms_version(response, &response_len);
-                version_counter = 0;
-            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(50));
