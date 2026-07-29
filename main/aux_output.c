@@ -8,9 +8,8 @@
 
 static const char *TAG = "AUX_OUTPUT";
 
-// PWM configuration for aux output LED
-#define AUX_LED_PWM_FREQ         5000        // 5 kHz (same as main LED)
-#define AUX_LED_PWM_RESOLUTION   8           // 8-bit resolution (0-255)
+// PWM for the aux output LED. Frequency and resolution come from the main LED's
+// timer (LED_PWM_FREQ / LED_PWM_RESOLUTION in led.h) — this channel only shares it.
 #define AUX_LED_PWM_TIMER        LEDC_TIMER_0  // Share timer with main LED
 #define AUX_LED_PWM_CHANNEL      LEDC_CHANNEL_1 // Different channel from main LED
 

@@ -8,7 +8,6 @@
 
 #define THROTTLE_TIMEOUT_MS 200  // 200ms timeout
 #define THROTTLE_NEUTRAL_VALUE 128
-#define VESC_UPDATE_INTERVAL_MS 50
 
 // Function declarations
 esp_err_t throttle_init(void);
