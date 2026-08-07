@@ -14,10 +14,6 @@
 ; fight each other.
 
 ; ---------------- board config ----------------
-; The remote does its own speed math from these, so they must match the VESC.
-(def motor-poles 14)      ; Motor Settings > "Motor Poles"
-(def gear-ratio 1.0)      ; motor turns per wheel turn (VESC "Gear Ratio")
-(def wheel-diam 0.09)     ; meters (VESC "Wheel Diameter" / 1000)
 (def aux-pin -1)          ; GPIO driving the aux output, -1 = not fitted
 
 (def brake-max 0.3)       ; failsafe brake, fraction of each VESC's l_current_min
@@ -36,6 +32,13 @@
 (def fs-active false)
 (def fs-start (systime))
 (def devs nil)
+
+; Drivetrain values, fetched from the VESC — never configured here. Zero until
+; the first answer arrives, which reads as "unknown" everywhere downstream.
+(def motor-poles 0)
+(def gear-ratio 0.0)
+(def wheel-diam 0.0)
+(def conf-valid false)
 
 ; An eeprom address that has never been written reads back nil.
 (defun eeprom-or (v d) (if (eq v nil) d v))
@@ -69,8 +72,39 @@
             lost)))
 
 (defun speed-kmh (erpm)
-    (let ((wheel-rpm (/ (/ (abs erpm) (/ motor-poles 2.0)) gear-ratio)))
-        (/ (* wheel-rpm 3.14159 wheel-diam 60.0) 1000.0)))
+    (if conf-valid
+        (let ((wheel-rpm (/ (/ (abs erpm) (/ motor-poles 2.0)) gear-ratio)))
+            (/ (* wheel-rpm 3.14159 wheel-diam 60.0) 1000.0))
+        0.0))
+
+; The Express has no motor config of its own and no extension that reads one
+; over CAN, so ask the VESC to read its own: can-cmd runs this string in the
+; target's Lisp REPL, which starts a bare VM if no script is loaded there. The
+; answer comes back as a 5-byte standard-ID frame. VESC's own bus traffic is
+; extended-ID, so a standard ID is free for this.
+; These two must agree — the 1952 inside the string is the reply ID we listen on.
+(def conf-sid 1952)
+(def conf-req "(let ((b (bufcreate 5)))(bufset-u8 b 0 (conf-get 'si-motor-poles))(bufset-u16 b 1 (* (conf-get 'si-gear-ratio) 1000))(bufset-u16 b 3 (* (conf-get 'si-wheel-diameter) 1000))(can-send-sid 1952 b))")
+
+(defun conf-loop ()
+    (loopwhile t
+        (if conf-valid
+            (sleep 10.0)                        ; re-check in case the VESC reboots
+            (progn
+                (if (eq devs nil) nil (can-cmd (ix devs 0) conf-req))
+                (let ((r (can-recv-sid 2.0)))   ; (id data), or a timeout symbol
+                    (if (and (eq (type-of r) 'type-list)
+                             (= (ix r 0) conf-sid)
+                             (>= (buflen (ix r 1)) 5))
+                        (let ((d (ix r 1)))
+                            (progn
+                                (setq motor-poles (bufget-u8 d 0))
+                                (setq gear-ratio (/ (bufget-u16 d 1) 1000.0))
+                                (setq wheel-diam (/ (bufget-u16 d 3) 1000.0))
+                                (setq conf-valid (and (> motor-poles 0)
+                                                      (> gear-ratio 0.0)
+                                                      (> wheel-diam 0.0)))))
+                        nil))))))
 
 (defun set-aux (s)
     (let ((v (if (= s 0) 0 1)))
@@ -231,3 +265,4 @@
 (event-enable 'event-ble-rx)
 (spawn control-loop)
 (spawn telem-loop)
+(spawn conf-loop)
