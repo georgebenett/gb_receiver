@@ -53,6 +53,7 @@ extern mc_temp_config_t* get_stored_mc_temp_config(void);
 // BLE Security Configuration
 #define BLE_PASSKEY                 483265  // Fixed passkey for pairing
 #define BLE_CMD_RESET_ODOMETER      0x01   // Command: reset trip odometer
+#define BLE_CMD_SHUTDOWN            0x02   // Command: remote is powering off intentionally
 
 
 static const uint16_t spp_service_uuid = 0xABF0;
@@ -94,6 +95,7 @@ static esp_gatt_if_t spp_gatts_if = 0xff;
 static bool enable_data_ntf = false;
 static bool is_connected = false;
 static bool is_authenticated = false;  // Connection is encrypted/authenticated
+static bool remote_shutdown_requested = false;  // BLE_CMD_SHUTDOWN seen before disconnect
 
 static float trip_km = 0.0f;
 static uint32_t trip_last_update_ms = 0;
@@ -521,6 +523,10 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                             spp_handle_table[SPP_IDX_SPP_STATUS_VAL],
                             sizeof(ack), ack, false);
                         ESP_LOGI(GATTS_TABLE_TAG, "Odometer reset via BLE command");
+                    } else if (cmd == BLE_CMD_SHUTDOWN) {
+                        remote_shutdown_requested = true;
+                        throttle_reset_value();
+                        ESP_LOGI(GATTS_TABLE_TAG, "Remote powering off - suppressing failsafe on disconnect");
                     }
                 }
             }
@@ -543,6 +549,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     	    spp_conn_id = p_data->connect.conn_id;
     	    spp_gatts_if = gatts_if;
     	    is_connected = true;
+    	    remote_shutdown_requested = false;  // Stale flag would wrongly suppress a future failsafe
     	    throttle_reset_value();  // Reset to THROTTLE_NEUTRAL_VALUE on new connection
     	    throttle_start_timeout_monitor();
             bldc_interface_can_get_mcconf_temp(); // Fetch compact motor config for BLE telemetry
@@ -562,10 +569,15 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     	    is_authenticated = false;  // Reset authentication on disconnect
     	    throttle_reset_value();
     	    throttle_stop_timeout_monitor();
-    	    // Actively brake on link loss instead of coasting at neutral. The
-    	    // throttle-timeout path also catches this in the supervision-timeout
-    	    // window, but firing here closes the gap on a clean disconnect.
-    	    failsafe_trigger(FAILSAFE_REASON_BLE_DISCONNECT);
+    	    if (remote_shutdown_requested) {
+    	        remote_shutdown_requested = false;  // Intentional power-off, not a lost link
+    	        ESP_LOGI(GATTS_TABLE_TAG, "Clean shutdown disconnect - failsafe skipped");
+    	    } else {
+    	        // Actively brake on link loss instead of coasting at neutral. The
+    	        // throttle-timeout path also catches this in the supervision-timeout
+    	        // window, but firing here closes the gap on a clean disconnect.
+    	        failsafe_trigger(FAILSAFE_REASON_BLE_DISCONNECT);
+    	    }
     	    enable_data_ntf = false;
     	    // Reset the odometer time reference so the disconnect gap is not
     	    // counted as riding distance when the next connection resumes.
