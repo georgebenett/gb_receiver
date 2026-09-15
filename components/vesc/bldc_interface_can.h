@@ -69,6 +69,7 @@ uint8_t bldc_interface_can_get_id_at(uint8_t index);        // VESC ID for detec
 // making behavior portable across builds with different motor / battery configs.
 void bldc_interface_can_set_current_rel_all(float current_rel);        // forward drive (0..1)
 void bldc_interface_can_set_current_brake_rel_all(float current_rel);  // regen brake (0..1)
+void bldc_interface_can_set_duty_all(float duty);                      // duty cycle (-1..1)
 
 // Send zero-current and zero-brake to every active VESC. Use at boot or after CAN init
 // to guarantee motors are in a known-quiescent state before any throttle source starts.

@@ -398,6 +398,20 @@ void bldc_interface_can_set_current_brake_rel_all(float current_rel) {
     }
 }
 
+// Apply duty cycle (-1..1) to every active VESC. Used by smart reverse.
+void bldc_interface_can_set_duty_all(float duty) {
+    uint8_t buffer[4];
+    int32_t index = 0;
+    buffer_append_float32(buffer, duty, 1e5, &index);
+
+    for (int i = 0; i < num_detected_vescs; i++) {
+        if (detected_vescs[i].active) {
+            uint32_t eid = detected_vescs[i].id | ((uint32_t)CAN_PACKET_SET_DUTY << 8);
+            can_transmit_eid(eid, buffer, 4);
+        }
+    }
+}
+
 // Force all motors into a known-quiescent state. Called once after CAN init so we
 // don't depend on whatever the VESC was doing before the receiver powered on.
 void bldc_interface_can_motors_safe_stop(void) {

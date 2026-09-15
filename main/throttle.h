@@ -5,6 +5,7 @@
 #include "freertos/timers.h"
 #include "datatypes.h"
 #include "esp_err.h"
+#include <stdbool.h>
 
 #define THROTTLE_TIMEOUT_MS 200  // 200ms timeout
 #define THROTTLE_NEUTRAL_VALUE 128
@@ -17,4 +18,5 @@ void throttle_reset_value(void);
 void throttle_reset_timeout(void);
 void throttle_start_timeout_monitor(void);
 void throttle_stop_timeout_monitor(void);
+void throttle_set_smart_reverse(bool enabled);  // setting owned by the remote, sent over BLE
 

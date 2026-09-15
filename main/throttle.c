@@ -10,6 +10,7 @@
 #include "hw_config.h"
 #include "led.h"
 #include "aux_output.h"
+#include "smart_reverse.h"
 
 #define THROTTLE_TAG "THROTTLE"
 
@@ -123,22 +124,48 @@ void throttle_stop_timeout_monitor(void)
 // of brake-vs-reverse transition. ~1 km/h on a typical esk8 setup.
 #define THROTTLE_STOPPED_ERPM   300
 
+#define THROTTLE_LOOP_MS        20  // 50 Hz
+
+static _Atomic bool smart_reverse_enabled = false;
+
+void throttle_set_smart_reverse(bool enabled)
+{
+    atomic_store(&smart_reverse_enabled, enabled);
+    ESP_LOGI(THROTTLE_TAG, "Smart reverse %s", enabled ? "enabled" : "disabled");
+}
+
 // Map a 0..255 throttle byte to the appropriate VESC command using smart-reverse logic:
 //   - Above neutral while moving reverse → brake (regen against reverse motion)
 //   - Above neutral while stopped or moving forward → drive forward (SET_CURRENT_REL +)
 //   - Below neutral while moving forward → brake (regen against forward motion)
 //   - Below neutral while stopped or moving reverse → drive reverse (SET_CURRENT_REL -)
-// This matches VESC "smart reverse" nunchuck behavior but lives in receiver firmware,
-// so it works the same regardless of the rider's VESC app config. All commands scale
-// against each VESC's own |l_current_max| / |l_current_min|.
+// With smart reverse enabled (setting from the remote), the last case is replaced by
+// VESC-style smart reverse: see smart_reverse.h.
+// Lives in receiver firmware, so it works the same regardless of the rider's VESC app
+// config. Current commands scale against each VESC's own |l_current_max| / |l_current_min|.
 static void send_throttle_task(void *pvParameters) {
+    smart_reverse_t smart_rev = {0};
+
     while (1) {
         // Failsafe task owns the motors while active — do not inject throttle.
-        if (!failsafe_is_active()) {
+        if (failsafe_is_active()) {
+            smart_rev = (smart_reverse_t){0};  // re-arm from scratch after failsafe
+        } else {
             uint16_t raw = throttle_get_value();
             uint8_t value = (raw > 255) ? 255 : (uint8_t)raw;
+            float brake = (value < THROTTLE_NEUTRAL_VALUE)
+                ? (float)(THROTTLE_NEUTRAL_VALUE - value) / (float)THROTTLE_NEUTRAL_VALUE
+                : 0.0f;
+            bool stopped = bldc_interface_can_get_max_abs_erpm() < THROTTLE_STOPPED_ERPM;
 
-            if (value == THROTTLE_NEUTRAL_VALUE) {
+            if (!atomic_load(&smart_reverse_enabled)) {
+                smart_rev = (smart_reverse_t){0};  // turned off mid-reverse must not resume later
+            }
+
+            if (atomic_load(&smart_reverse_enabled) &&
+                smart_reverse_step(&smart_rev, brake, stopped, THROTTLE_LOOP_MS / 1000.0f)) {
+                bldc_interface_can_set_duty_all(smart_rev.duty);
+            } else if (value == THROTTLE_NEUTRAL_VALUE) {
                 bldc_interface_can_set_current_rel_all(0.0f);
             } else {
                 int32_t erpm = bldc_interface_can_get_signed_dominant_erpm();
@@ -159,6 +186,10 @@ static void send_throttle_task(void *pvParameters) {
                     if (erpm > THROTTLE_STOPPED_ERPM) {
                         // Moving forward, rider wants brake or reverse — brake first.
                         bldc_interface_can_set_current_brake_rel_all(magnitude);
+                    } else if (atomic_load(&smart_reverse_enabled)) {
+                        // Smart reverse only reverses via the duty ramp above; below its
+                        // 92% entry point a stopped board just holds brake.
+                        bldc_interface_can_set_current_brake_rel_all(magnitude);
                     } else {
                         // Stopped or already reverse — drive reverse.
                         bldc_interface_can_set_current_rel_all(-magnitude);
@@ -167,7 +198,7 @@ static void send_throttle_task(void *pvParameters) {
             }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(20));  // 50 Hz
+        vTaskDelay(pdMS_TO_TICKS(THROTTLE_LOOP_MS));
     }
 }
 
