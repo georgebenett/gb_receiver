@@ -9,10 +9,13 @@
 #include "buffer.h"
 #include "crc.h"
 #include "esp_log.h"
+#include "esp_mac.h"
+#include "../../main/version.h"
 #include "driver/twai.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <string.h>
+#include <stdio.h>
 #include <inttypes.h>
 
 static const char *TAG = "BLDC_CAN";
@@ -21,6 +24,12 @@ static const char *TAG = "BLDC_CAN";
 #define CAN_BAUD_RATE TWAI_TIMING_CONFIG_500KBITS()  // 500 kbps
 #define MAX_DETECTED_VESCS 4  // Maximum number of VESCs to track
 #define VESC_DETECTION_TIMEOUT_MS 5000  // Consider VESC inactive after 5s without STATUS messages
+
+// CAN ID the receiver claims as sender, so VESC replies are addressed here.
+// Must not equal the VESC's own ID (or ID+1): dual-motor hardware (Duet,
+// Stormcore 60D/100D) loops frames for those IDs back internally instead of
+// putting them on the bus, so replies would never arrive.
+#define RECEIVER_CAN_ID 254
 
 // Transmit retry configuration
 #define CAN_TX_MAX_RETRIES      3   // Attempts per transmit call
@@ -58,7 +67,7 @@ static void process_status_5_message(uint8_t id, uint8_t *data, uint8_t len);
 static void update_and_notify_values(void);
 static void detect_vesc_id(uint8_t id);
 static uint8_t get_primary_vesc_id(void);
-static void send_command_to_id(uint8_t vesc_id, uint8_t *data, uint16_t len);
+static void send_command_to_id(uint8_t vesc_id, uint8_t *data, uint16_t len, uint8_t send_type);
 
 // Maximum plausible ERPM for any supported vehicle.
 // During VESC motor detection the VESC broadcasts STATUS packets with
@@ -306,13 +315,14 @@ static void detect_vesc_id(uint8_t id) {
 }
 
 // Internal: send a command to a specific VESC ID (single or multi-frame as needed)
-static void send_command_to_id(uint8_t vesc_id, uint8_t *data, uint16_t len) {
+// send_type: 0 = request (target processes it and replies), 1 = reply (VESC forwards it to its comm port)
+static void send_command_to_id(uint8_t vesc_id, uint8_t *data, uint16_t len, uint8_t send_type) {
     uint8_t send_buffer[8];
 
     if (len <= 6) {
         uint32_t ind = 0;
-        send_buffer[ind++] = vesc_id;  // Sender ID
-        send_buffer[ind++] = 0;        // send = 0 (process packet)
+        send_buffer[ind++] = RECEIVER_CAN_ID;  // Sender ID (reply address)
+        send_buffer[ind++] = send_type;
         memcpy(send_buffer + ind, data, len);
         ind += len;
 
@@ -339,8 +349,8 @@ static void send_command_to_id(uint8_t vesc_id, uint8_t *data, uint16_t len) {
         }
 
         uint32_t ind = 0;
-        send_buffer[ind++] = vesc_id;
-        send_buffer[ind++] = 0;
+        send_buffer[ind++] = RECEIVER_CAN_ID;
+        send_buffer[ind++] = send_type;
         send_buffer[ind++] = (len >> 8) & 0xFF;
         send_buffer[ind++] = len & 0xFF;
         uint16_t crc = crc16(data, len);
@@ -356,7 +366,7 @@ void bldc_interface_can_send_command(uint8_t *data, uint16_t len) {
     if (!primary_vesc_detected) {
         return;
     }
-    send_command_to_id(get_primary_vesc_id(), data, len);
+    send_command_to_id(get_primary_vesc_id(), data, len, 0);
 }
 
 // Apply forward drive current to every active VESC. Direct VESC API — bypasses
@@ -514,6 +524,32 @@ static void process_response_packet(unsigned char *data, unsigned int len) {
     }
 }
 
+// Requests addressed to the receiver, e.g. VESC Tool talking to us through a VESC
+// with CAN forwarding. Only COMM_FW_VERSION is answered, so VESC Tool can name us.
+static void process_request_packet(uint8_t sender_id, const uint8_t *data, unsigned int len) {
+    if (!len || data[0] != COMM_FW_VERSION) return;
+
+    uint8_t major = 0, minor = 0;
+    sscanf(FW_VERSION, "%hhu.%hhu", &major, &minor);
+
+    uint8_t buf[40];
+    int ind = 0;
+    buf[ind++] = COMM_FW_VERSION;
+    buf[ind++] = major;
+    buf[ind++] = minor;
+    strcpy((char *)buf + ind, "GB Receiver");  // hw name shown in VESC Tool
+    ind += strlen("GB Receiver") + 1;
+    memset(buf + ind, 0, 12);                  // 12-byte UUID: base MAC, zero padded
+    esp_efuse_mac_get_default(buf + ind);
+    ind += 12;
+    buf[ind++] = 0;  // pairing done
+    buf[ind++] = 0;  // test fw version
+    buf[ind++] = 2;  // HW_TYPE_CUSTOM_MODULE
+    buf[ind++] = 0;  // custom config count
+
+    send_command_to_id(sender_id, buf, ind, 1);
+}
+
 // Callback setters
 void bldc_interface_can_set_rx_value_func(void(*func)(mc_values *values)) {
     rx_value_func = func;
@@ -538,6 +574,7 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
                               cmd == CAN_PACKET_STATUS_5);
 
     bool is_broadcast = (controller_id == 255);
+    bool is_reply = (controller_id == RECEIVER_CAN_ID);
     bool is_detected_vesc = false;
 
     // Check if this is from a detected VESC
@@ -549,7 +586,7 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
     }
 
     // Accept STATUS messages (for auto-detection), broadcast, or detected VESCs
-    if (!is_status_message && !is_broadcast && !is_detected_vesc) {
+    if (!is_status_message && !is_broadcast && !is_detected_vesc && !is_reply) {
         // Unknown VESC - could be another device on the bus, ignore silently
         return;
     }
@@ -605,24 +642,35 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
             break;
         }
 
+        case CAN_PACKET_PING: {
+            // Answer VESC Tool's CAN scan so the receiver shows up as a device on the bus.
+            // PONG payload: [our id, hw type]; 2 = HW_TYPE_CUSTOM_MODULE in VESC firmware.
+            // VESC Tool then asks for COMM_FW_VERSION, answered in process_request_packet.
+            if (is_reply && len >= 1) {
+                uint8_t pong[2] = { RECEIVER_CAN_ID, 2 };
+                can_transmit_eid(data[0] | ((uint32_t)CAN_PACKET_PONG << 8), pong, sizeof(pong));
+            }
+            break;
+        }
+
         case CAN_PACKET_PROCESS_SHORT_BUFFER: {
             // Short response (≤6 bytes) - this is how VESC sends responses
             // Accept responses from primary VESC or any detected VESC
-            if (controller_id == get_primary_vesc_id() ||
-                (controller_id != 255 && is_detected_vesc)) {
+            if (is_reply) {
                 if (len < 2) {
                     ESP_LOGW(TAG, "Short buffer too small: len=%d", len);
                     break;
                 }
-                // sender_id = data[0];  // Not used
-                // send_type = data[1];  // Not used
-
-                ESP_LOGD(TAG, "VESC response received from ID=%d: sender_id=%d send_type=%d len=%d cmd=0x%02X",
+                ESP_LOGD(TAG, "Short buffer from ID=%d: sender_id=%d send_type=%d len=%d cmd=0x%02X",
                          controller_id, data[0], data[1], len, (len > 2) ? data[2] : 0);
 
-                // Process the response packet (skip sender_id and send_type)
+                // Skip sender_id and send_type. send_type 0 = request for us, otherwise a reply.
                 if (len > 2) {
-                    process_response_packet(data + 2, len - 2);
+                    if (data[1] == 0) {
+                        process_request_packet(data[0], data + 2, len - 2);
+                    } else {
+                        process_response_packet(data + 2, len - 2);
+                    }
                 }
             }
             break;
@@ -633,8 +681,7 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
                 ESP_LOGW(TAG, "FILL_RX_BUFFER too small: len=%d", len);
                 break;
             }
-            if (controller_id == get_primary_vesc_id() ||
-                (controller_id != 255 && is_detected_vesc)) {
+            if (is_reply) {
 
                 uint8_t offset = data[0];
                 uint8_t frag_len = len - 1;
@@ -662,8 +709,7 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
                 ESP_LOGW(TAG, "FILL_RX_BUFFER_LONG too small: len=%d", len);
                 break;
             }
-            if (controller_id == get_primary_vesc_id() ||
-                (controller_id != 255 && is_detected_vesc)) {
+            if (is_reply) {
 
                 uint16_t offset = ((uint16_t)data[0] << 8) | data[1];
                 uint8_t frag_len = len - 2;
@@ -691,8 +737,7 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
                 ESP_LOGW(TAG, "PROCESS_RX_BUFFER too small: len=%d", len);
                 break;
             }
-            if (controller_id == get_primary_vesc_id() ||
-                (controller_id != 255 && is_detected_vesc)) {
+            if (is_reply) {
 
                 uint16_t expected_len = ((uint16_t)data[2] << 8) | data[3];
                 uint16_t expected_crc = ((uint16_t)data[4] << 8) | data[5];
@@ -709,7 +754,11 @@ void bldc_interface_can_process_rx_frame(uint32_t eid, uint8_t *data, uint8_t le
                 if (calculated_crc == expected_crc) {
                     ESP_LOGD(TAG, "Multi-frame response complete: len=%d from ID=%d",
                              expected_len, controller_id);
-                    process_response_packet(buf->data, expected_len);
+                    if (data[1] == 0) {
+                        process_request_packet(data[0], buf->data, expected_len);
+                    } else {
+                        process_response_packet(buf->data, expected_len);
+                    }
                 } else {
                     ESP_LOGW(TAG, "CRC mismatch ID=%d: expected=0x%04X calculated=0x%04X",
                              controller_id, expected_crc, calculated_crc);
