@@ -11,8 +11,13 @@
 #include "led.h"
 #include "aux_output.h"
 #include "smart_reverse.h"
+#include "assist_push.h"
+#include "ble.h"
+#include <math.h>
 
 #define THROTTLE_TAG "THROTTLE"
+
+extern mc_temp_config_t *get_stored_mc_temp_config(void);
 
 static _Atomic uint16_t current_throttle_value = THROTTLE_NEUTRAL_VALUE;
 static bool throttle_packet_received = false;
@@ -127,11 +132,72 @@ void throttle_stop_timeout_monitor(void)
 #define THROTTLE_LOOP_MS        20  // 50 Hz
 
 static _Atomic bool smart_reverse_enabled = false;
+static _Atomic bool assist_push_enabled = false;
+// Rider-tunable, owned by the remote. Defaults apply until it sends its own.
+static _Atomic int assist_strength_pct = (int)(ASSIST_MAX_CURRENT * 100.0f);
+static _Atomic int assist_decay_rpm_s = (int)ASSIST_DECAY_RPM_S;
 
 void throttle_set_smart_reverse(bool enabled)
 {
     atomic_store(&smart_reverse_enabled, enabled);
     ESP_LOGI(THROTTLE_TAG, "Smart reverse %s", enabled ? "enabled" : "disabled");
+}
+
+void throttle_set_assist_push(bool enabled)
+{
+    atomic_store(&assist_push_enabled, enabled);
+    ESP_LOGI(THROTTLE_TAG, "Assistive push %s", enabled ? "enabled" : "disabled");
+}
+
+// Strength and decay come from the remote, clamped here: the receiver must not
+// take a bad value on faith, whatever sent it.
+void throttle_set_assist_params(uint8_t strength_pct, uint8_t decay_rpm_s)
+{
+    float current = strength_pct / 100.0f;
+    if (current < ASSIST_CURRENT_MIN) current = ASSIST_CURRENT_MIN;
+    if (current > ASSIST_CURRENT_MAX) current = ASSIST_CURRENT_MAX;
+
+    float decay = (float)decay_rpm_s;
+    if (decay < ASSIST_DECAY_MIN) decay = ASSIST_DECAY_MIN;
+    if (decay > ASSIST_DECAY_MAX) decay = ASSIST_DECAY_MAX;
+
+    atomic_store(&assist_strength_pct, (int)(current * 100.0f));
+    atomic_store(&assist_decay_rpm_s, (int)decay);
+    ESP_LOGI(THROTTLE_TAG, "Assist params: strength %d%%, decay %d rpm/s",
+             (int)(current * 100.0f), (int)decay);
+}
+
+// Rider speed window for assistive push. A push has to reach a decent rolling
+// speed before assist takes over — below that the rider is still getting going,
+// and assist would be shoving a board that is barely moving. Above the cap it
+// lets go rather than holding the board back downhill.
+#define ASSIST_MIN_KMH      8.0f   // a push must reach this before assist takes it
+#define ASSIST_MAX_KMH      20.0f  // above this assist lets go instead of holding back
+#define ASSIST_RELEASE_KMH  2.0f   // wind down to here, then let the board roll to rest
+#define ASSIST_FULL_KMH     2.0f   // this far below target, assist gives its full current
+
+// Convert km/h to ERPM for this drivetrain — the inverse of the ERPM → km/h
+// conversion in failsafe.c. Returns false until the VESC has sent its config,
+// so assist stays idle rather than guessing thresholds for an unknown board.
+static bool assist_erpm_window(float *min_erpm, float *max_erpm, float *release_erpm,
+                               float *full_erpm, float *decay_erpm_s)
+{
+    mc_temp_config_t *mc = get_stored_mc_temp_config();
+    if (!mc || !mc->valid || mc->motor_poles == 0 ||
+        mc->gear_ratio <= 0.0f || mc->wheel_diameter <= 0.0f) {
+        return false;
+    }
+
+    float pole_pairs = mc->motor_poles / 2.0f;
+    // kmh -> wheel rpm -> motor rpm -> ERPM
+    float erpm_per_kmh = (1000.0f / 60.0f) / ((float)M_PI * mc->wheel_diameter) *
+                         mc->gear_ratio * pole_pairs;
+    *min_erpm = ASSIST_MIN_KMH * erpm_per_kmh;
+    *max_erpm = ASSIST_MAX_KMH * erpm_per_kmh;
+    *release_erpm = ASSIST_RELEASE_KMH * erpm_per_kmh;
+    *full_erpm = ASSIST_FULL_KMH * erpm_per_kmh;
+    *decay_erpm_s = (float)atomic_load(&assist_decay_rpm_s) * pole_pairs;
+    return true;
 }
 
 // Map a 0..255 throttle byte to the appropriate VESC command using smart-reverse logic:
@@ -140,16 +206,20 @@ void throttle_set_smart_reverse(bool enabled)
 //   - Below neutral while moving forward → brake (regen against forward motion)
 //   - Below neutral while stopped or moving reverse → drive reverse (SET_CURRENT_REL -)
 // With smart reverse enabled (setting from the remote), the last case is replaced by
-// VESC-style smart reverse: see smart_reverse.h.
+// VESC-style smart reverse: see smart_reverse.h. With assistive push enabled (also
+// from the remote), a kick while the throttle sits at neutral is held and decayed
+// with a forward-only current instead of coasting: see assist_push.h.
 // Lives in receiver firmware, so it works the same regardless of the rider's VESC app
 // config. Current commands scale against each VESC's own |l_current_max| / |l_current_min|.
 static void send_throttle_task(void *pvParameters) {
     smart_reverse_t smart_rev = {0};
+    assist_push_t assist = {0};
 
     while (1) {
         // Failsafe task owns the motors while active — do not inject throttle.
         if (failsafe_is_active()) {
             smart_rev = (smart_reverse_t){0};  // re-arm from scratch after failsafe
+            assist = (assist_push_t){0};
         } else {
             uint16_t raw = throttle_get_value();
             uint8_t value = (raw > 255) ? 255 : (uint8_t)raw;
@@ -162,7 +232,36 @@ static void send_throttle_task(void *pvParameters) {
                 smart_rev = (smart_reverse_t){0};  // turned off mid-reverse must not resume later
             }
 
-            if (atomic_load(&smart_reverse_enabled) &&
+            // Assistive push: sustains the speed the rider kicked up to with forward
+            // current only, then bleeds it off. Never runs without a remote paired — a
+            // push in the garage must not drive the board away — and any throttle or
+            // brake input cancels it.
+            float assist_min, assist_max, assist_release, assist_full, assist_decay;
+            bool assist_ready = atomic_load(&assist_push_enabled) && ble_is_connected() &&
+                                !bldc_interface_can_has_fault() &&
+                                assist_erpm_window(&assist_min, &assist_max, &assist_release,
+                                                   &assist_full, &assist_decay);
+            if (!assist_ready) {
+                assist = (assist_push_t){0};
+            }
+
+            bool was_engaged = assist.engaged;
+            if (assist_ready &&
+                assist_push_step(&assist, (float)bldc_interface_can_get_signed_dominant_erpm(),
+                                 value != THROTTLE_NEUTRAL_VALUE, stopped, assist_min,
+                                 assist_max, assist_release, assist_full,
+                                 atomic_load(&assist_strength_pct) / 100.0f, assist_decay,
+                                 THROTTLE_LOOP_MS / 1000.0f)) {
+                if (!was_engaged) {
+                    ESP_LOGI(THROTTLE_TAG, "Assist engaged at %.0f ERPM", assist.target);
+                }
+                // Forward current only — never a brake command, so a rider
+                // pushing faster than the target is never held back.
+                bldc_interface_can_set_current_rel_all(assist.current);
+            } else if (was_engaged && !assist.engaged) {
+                ESP_LOGI(THROTTLE_TAG, "Assist released");
+                bldc_interface_can_set_current_rel_all(0.0f);  // coast, never brake
+            } else if (atomic_load(&smart_reverse_enabled) &&
                 smart_reverse_step(&smart_rev, brake, stopped, THROTTLE_LOOP_MS / 1000.0f)) {
                 bldc_interface_can_set_duty_all(smart_rev.duty);
             } else if (value == THROTTLE_NEUTRAL_VALUE) {
