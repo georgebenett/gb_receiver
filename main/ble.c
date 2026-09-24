@@ -56,6 +56,7 @@ extern mc_temp_config_t* get_stored_mc_temp_config(void);
 #define BLE_CMD_SHUTDOWN            0x02   // Command: remote is powering off intentionally
 #define BLE_CMD_SET_SMART_REVERSE   0x03   // Command: [0x03, enabled] smart reverse setting from the remote
 #define BLE_CMD_SET_ASSIST_PUSH      0x04   // Command: [0x04, enabled, strength%, decay] from the remote
+#define BLE_CMD_SET_NO_REVERSE      0x05   // Command: [0x05, enabled] reverse lockout from the remote
 
 
 static const uint16_t spp_service_uuid = 0xABF0;
@@ -531,6 +532,8 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                         ESP_LOGI(GATTS_TABLE_TAG, "Remote powering off - suppressing failsafe on disconnect");
                     } else if (cmd == BLE_CMD_SET_SMART_REVERSE && p_data->write.len >= 2) {
                         throttle_set_smart_reverse(p_data->write.value[1] != 0);
+                    } else if (cmd == BLE_CMD_SET_NO_REVERSE && p_data->write.len >= 2) {
+                        throttle_set_no_reverse(p_data->write.value[1] != 0);
                     } else if (cmd == BLE_CMD_SET_ASSIST_PUSH && p_data->write.len >= 2) {
                         throttle_set_assist_push(p_data->write.value[1] != 0);
                         // Older remotes send only the flag; they keep the defaults.
@@ -562,6 +565,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     	    is_connected = true;
     	    remote_shutdown_requested = false;  // Stale flag would wrongly suppress a future failsafe
     	    throttle_set_smart_reverse(false);  // until this remote sends its own setting
+    	    throttle_set_no_reverse(false);     // until this remote sends its own setting
     	    throttle_set_assist_push(false);    // until this remote sends its own setting
     	    throttle_reset_value();  // Reset to THROTTLE_NEUTRAL_VALUE on new connection
     	    throttle_start_timeout_monitor();

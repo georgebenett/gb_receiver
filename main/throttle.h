@@ -19,6 +19,7 @@ void throttle_reset_timeout(void);
 void throttle_start_timeout_monitor(void);
 void throttle_stop_timeout_monitor(void);
 void throttle_set_smart_reverse(bool enabled);  // setting owned by the remote, sent over BLE
+void throttle_set_no_reverse(bool enabled);     // setting owned by the remote, sent over BLE
 void throttle_set_assist_push(bool enabled);    // setting owned by the remote, sent over BLE
 void throttle_set_assist_params(uint8_t strength_pct, uint8_t decay_rpm_s);  // ditto
 

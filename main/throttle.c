@@ -132,6 +132,7 @@ void throttle_stop_timeout_monitor(void)
 #define THROTTLE_LOOP_MS        20  // 50 Hz
 
 static _Atomic bool smart_reverse_enabled = false;
+static _Atomic bool no_reverse_enabled = false;
 static _Atomic bool assist_push_enabled = false;
 // Rider-tunable, owned by the remote. Defaults apply until it sends its own.
 static _Atomic int assist_strength_pct = (int)(ASSIST_MAX_CURRENT * 100.0f);
@@ -141,6 +142,13 @@ void throttle_set_smart_reverse(bool enabled)
 {
     atomic_store(&smart_reverse_enabled, enabled);
     ESP_LOGI(THROTTLE_TAG, "Smart reverse %s", enabled ? "enabled" : "disabled");
+}
+
+// Below neutral only ever brakes. Overrides smart reverse so they cannot fight.
+void throttle_set_no_reverse(bool enabled)
+{
+    atomic_store(&no_reverse_enabled, enabled);
+    ESP_LOGI(THROTTLE_TAG, "Reverse %s", enabled ? "disabled" : "enabled");
 }
 
 void throttle_set_assist_push(bool enabled)
@@ -205,10 +213,10 @@ static bool assist_erpm_window(float *min_erpm, float *max_erpm, float *release_
 //   - Above neutral while stopped or moving forward → drive forward (SET_CURRENT_REL +)
 //   - Below neutral while moving forward → brake (regen against forward motion)
 //   - Below neutral while stopped or moving reverse → drive reverse (SET_CURRENT_REL -)
-// With smart reverse enabled (setting from the remote), the last case is replaced by
-// VESC-style smart reverse: see smart_reverse.h. With assistive push enabled (also
-// from the remote), a kick while the throttle sits at neutral is held and decayed
-// with a forward-only current instead of coasting: see assist_push.h.
+// The last case is replaced by smart reverse (see smart_reverse.h), or brakes
+// instead when reverse is disabled - the lockout wins. With assistive push, a kick
+// at neutral is held and decayed on forward current instead of coasting:
+// see assist_push.h.
 // Lives in receiver firmware, so it works the same regardless of the rider's VESC app
 // config. Current commands scale against each VESC's own |l_current_max| / |l_current_min|.
 static void send_throttle_task(void *pvParameters) {
@@ -228,7 +236,10 @@ static void send_throttle_task(void *pvParameters) {
                 : 0.0f;
             bool stopped = bldc_interface_can_get_max_abs_erpm() < THROTTLE_STOPPED_ERPM;
 
-            if (!atomic_load(&smart_reverse_enabled)) {
+            bool no_reverse = atomic_load(&no_reverse_enabled);
+            bool smart_reverse = atomic_load(&smart_reverse_enabled) && !no_reverse;
+
+            if (!smart_reverse) {
                 smart_rev = (smart_reverse_t){0};  // turned off mid-reverse must not resume later
             }
 
@@ -261,7 +272,7 @@ static void send_throttle_task(void *pvParameters) {
             } else if (was_engaged && !assist.engaged) {
                 ESP_LOGI(THROTTLE_TAG, "Assist released");
                 bldc_interface_can_set_current_rel_all(0.0f);  // coast, never brake
-            } else if (atomic_load(&smart_reverse_enabled) &&
+            } else if (smart_reverse &&
                 smart_reverse_step(&smart_rev, brake, stopped, THROTTLE_LOOP_MS / 1000.0f)) {
                 bldc_interface_can_set_duty_all(smart_rev.duty);
             } else if (value == THROTTLE_NEUTRAL_VALUE) {
@@ -285,9 +296,9 @@ static void send_throttle_task(void *pvParameters) {
                     if (erpm > THROTTLE_STOPPED_ERPM) {
                         // Moving forward, rider wants brake or reverse — brake first.
                         bldc_interface_can_set_current_brake_rel_all(magnitude);
-                    } else if (atomic_load(&smart_reverse_enabled)) {
+                    } else if (smart_reverse || no_reverse) {
                         // Smart reverse only reverses via the duty ramp above; below its
-                        // 92% entry point a stopped board just holds brake.
+                        // 92% entry point, or with reverse off, a stopped board holds brake.
                         bldc_interface_can_set_current_brake_rel_all(magnitude);
                     } else {
                         // Stopped or already reverse — drive reverse.
