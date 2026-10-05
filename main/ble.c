@@ -14,6 +14,7 @@
 #include "esp_system.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_mac.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "esp_bt.h"
@@ -29,6 +30,7 @@
 #include "throttle.h"
 #include "failsafe.h"
 #include "led.h"
+#include "version.h"
 #include "bms.h"
 #include "datatypes.h"
 #include "bldc_interface_can.h"
@@ -57,6 +59,10 @@ extern mc_temp_config_t* get_stored_mc_temp_config(void);
 #define BLE_CMD_SET_SMART_REVERSE   0x03   // Command: [0x03, enabled] smart reverse setting from the remote
 #define BLE_CMD_SET_ASSIST_PUSH      0x04   // Command: [0x04, enabled, strength%, decay] from the remote
 #define BLE_CMD_SET_NO_REVERSE      0x05   // Command: [0x05, enabled] reverse lockout from the remote
+#define BLE_CMD_SET_CURRENT_SCALE   0x09   // Command: [0x09, pct] drive current share from the remote's ride profile
+#define BLE_CMD_SET_SPEED_LIMIT     0x06   // Command: [0x06, cap_kmh] speed limit from the remote, 0 = off
+#define BLE_CMD_GET_FW_VERSION      0x07   // Command: [0x07], replied on status as [0x07, major, minor, patch, mac x6]
+#define BLE_STATUS_FRAME            0x08   // Status, once a second: see send_status_frame()
 
 
 static const uint16_t spp_service_uuid = 0xABF0;
@@ -526,6 +532,13 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                             spp_handle_table[SPP_IDX_SPP_STATUS_VAL],
                             sizeof(ack), ack, false);
                         ESP_LOGI(GATTS_TABLE_TAG, "Odometer reset via BLE command");
+                    } else if (cmd == BLE_CMD_GET_FW_VERSION) {
+                        uint8_t rsp[10] = {BLE_CMD_GET_FW_VERSION};
+                        sscanf(FW_VERSION, "%hhu.%hhu.%hhu", &rsp[1], &rsp[2], &rsp[3]);
+                        esp_read_mac(&rsp[4], ESP_MAC_BT);
+                        esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id,
+                            spp_handle_table[SPP_IDX_SPP_STATUS_VAL],
+                            sizeof(rsp), rsp, false);
                     } else if (cmd == BLE_CMD_SHUTDOWN) {
                         remote_shutdown_requested = true;
                         throttle_reset_value();
@@ -541,6 +554,10 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                             throttle_set_assist_params(p_data->write.value[2],
                                                        p_data->write.value[3]);
                         }
+                    } else if (cmd == BLE_CMD_SET_SPEED_LIMIT && p_data->write.len >= 2) {
+                        throttle_set_speed_limit(p_data->write.value[1]);
+                    } else if (cmd == BLE_CMD_SET_CURRENT_SCALE && p_data->write.len >= 2) {
+                        throttle_set_current_scale(p_data->write.value[1]);
                     }
                 }
             }
@@ -567,6 +584,8 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     	    throttle_set_smart_reverse(false);  // until this remote sends its own setting
     	    throttle_set_no_reverse(false);     // until this remote sends its own setting
     	    throttle_set_assist_push(false);    // until this remote sends its own setting
+    	    throttle_set_speed_limit(0);        // until this remote sends its own setting
+    	    throttle_set_current_scale(100);    // until this remote sends its own setting
     	    throttle_reset_value();  // Reset to THROTTLE_NEUTRAL_VALUE on new connection
     	    throttle_start_timeout_monitor();
             bldc_interface_can_get_mcconf_temp(); // Fetch compact motor config for BLE telemetry
@@ -872,8 +891,32 @@ static void trip_nvs_save(void) {
     nvs_close(nvs_handle);
 }
 
+/* 11 bytes on the status characteristic:
+ *   0 0x08   1 flags: smart_rev | no_rev<<1 | assist<<2 | failsafe<<3 | bms<<4
+ *   2 vesc fault code   3 failsafe reason   4 speed limit   5 assist strength%
+ *   6 assist decay      7-10 uptime s (u32)
+ * The remote shows the settings as applied here and raises the faults. */
+static void send_status_frame(void) {
+    uint8_t set[4];
+    throttle_get_settings(set);
+    uint8_t buf[11] = {BLE_STATUS_FRAME};
+    buf[1] = (set[0] & 7) | (failsafe_is_active() << 3) |
+             ((get_stored_bms_values()->num_cells > 0) << 4);
+    buf[2] = get_stored_vesc_values()->fault_code;
+    buf[3] = failsafe_last_reason();
+    memcpy(&buf[4], &set[1], 3);
+    put_u32(&buf[7], (uint32_t)(esp_timer_get_time() / 1000000));
+    esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id,
+        spp_handle_table[SPP_IDX_SPP_STATUS_VAL], sizeof(buf), buf, false);
+}
+
 static void send_telemetry_task(void *pvParameters) {
+    int tick = 0;
     while (1) {
+        if (is_connected && tick++ % 10 == 0) {
+            send_status_frame();
+        }
+
         if (is_connected && enable_data_ntf) {
             mc_values* vesc_values = get_stored_vesc_values();
             bms_values_t* bms_values = get_stored_bms_values();

@@ -148,6 +148,10 @@ bool failsafe_is_active(void) {
     return failsafe_active;
 }
 
+failsafe_reason_t failsafe_last_reason(void) {
+    return last_reason;
+}
+
 bool failsafe_try_clear(void) {
     if (!failsafe_active) {
         return true;

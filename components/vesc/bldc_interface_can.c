@@ -384,6 +384,7 @@ void bldc_interface_can_set_current_rel_all(float current_rel) {
     }
 }
 
+
 // Apply regenerative braking to every active VESC.
 void bldc_interface_can_set_current_brake_rel_all(float current_rel) {
     uint8_t buffer[4];

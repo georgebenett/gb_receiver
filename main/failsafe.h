@@ -19,6 +19,7 @@ void failsafe_init(void);
 void failsafe_trigger(failsafe_reason_t reason);
 
 bool failsafe_is_active(void);
+failsafe_reason_t failsafe_last_reason(void);
 
 // Attempt to clear the failsafe.  Returns true only when:
 //   - All VESCs are responding, AND

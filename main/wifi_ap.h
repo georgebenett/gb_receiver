@@ -4,7 +4,7 @@
 #include "esp_err.h"
 
 // Start the SoftAP if no BLE remote has been connected for this long.
-#define WIFI_AP_IDLE_TIMEOUT_MS 60000
+#define WIFI_AP_IDLE_TIMEOUT_MS 10000 // 10 seconds
 
 esp_err_t wifi_ap_init(void);
 esp_err_t wifi_ap_start(void);

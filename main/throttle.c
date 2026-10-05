@@ -12,6 +12,7 @@
 #include "aux_output.h"
 #include "smart_reverse.h"
 #include "assist_push.h"
+#include "speed_limit.h"
 #include "ble.h"
 #include <math.h>
 
@@ -186,9 +187,9 @@ void throttle_set_assist_params(uint8_t strength_pct, uint8_t decay_rpm_s)
 
 // Convert km/h to ERPM for this drivetrain — the inverse of the ERPM → km/h
 // conversion in failsafe.c. Returns false until the VESC has sent its config,
-// so assist stays idle rather than guessing thresholds for an unknown board.
-static bool assist_erpm_window(float *min_erpm, float *max_erpm, float *release_erpm,
-                               float *full_erpm, float *decay_erpm_s)
+// so callers stay idle rather than guessing thresholds for an unknown board.
+// pole_pairs_out is handed back too: assist's decay rate needs it separately.
+static bool erpm_per_kmh_factor(float *erpm_per_kmh, float *pole_pairs_out)
 {
     mc_temp_config_t *mc = get_stored_mc_temp_config();
     if (!mc || !mc->valid || mc->motor_poles == 0 ||
@@ -198,14 +199,56 @@ static bool assist_erpm_window(float *min_erpm, float *max_erpm, float *release_
 
     float pole_pairs = mc->motor_poles / 2.0f;
     // kmh -> wheel rpm -> motor rpm -> ERPM
-    float erpm_per_kmh = (1000.0f / 60.0f) / ((float)M_PI * mc->wheel_diameter) *
-                         mc->gear_ratio * pole_pairs;
+    *erpm_per_kmh = (1000.0f / 60.0f) / ((float)M_PI * mc->wheel_diameter) *
+                    mc->gear_ratio * pole_pairs;
+    if (pole_pairs_out) {
+        *pole_pairs_out = pole_pairs;
+    }
+    return true;
+}
+
+static bool assist_erpm_window(float *min_erpm, float *max_erpm, float *release_erpm,
+                               float *full_erpm, float *decay_erpm_s)
+{
+    float erpm_per_kmh, pole_pairs;
+    if (!erpm_per_kmh_factor(&erpm_per_kmh, &pole_pairs)) {
+        return false;
+    }
     *min_erpm = ASSIST_MIN_KMH * erpm_per_kmh;
     *max_erpm = ASSIST_MAX_KMH * erpm_per_kmh;
     *release_erpm = ASSIST_RELEASE_KMH * erpm_per_kmh;
     *full_erpm = ASSIST_FULL_KMH * erpm_per_kmh;
     *decay_erpm_s = (float)atomic_load(&assist_decay_rpm_s) * pole_pairs;
     return true;
+}
+
+// Rider-picked cap, in km/h; 0 = off. Set from the remote, see throttle.h.
+static _Atomic uint8_t speed_limit_kmh = 0;
+
+void throttle_get_settings(uint8_t out[4])
+{
+    out[0] = atomic_load(&smart_reverse_enabled) | (atomic_load(&no_reverse_enabled) << 1) |
+             (atomic_load(&assist_push_enabled) << 2);
+    out[1] = atomic_load(&speed_limit_kmh);
+    out[2] = atomic_load(&assist_strength_pct);
+    out[3] = atomic_load(&assist_decay_rpm_s);
+}
+
+static _Atomic uint8_t current_scale_pct = 100;
+
+void throttle_set_current_scale(uint8_t pct)
+{
+    if (pct < 1 || pct > 100) {
+        pct = 100;
+    }
+    atomic_store(&current_scale_pct, pct);
+    ESP_LOGI(THROTTLE_TAG, "Drive current scale: %u%%", pct);
+}
+
+void throttle_set_speed_limit(uint8_t cap_kmh)
+{
+    atomic_store(&speed_limit_kmh, cap_kmh);
+    ESP_LOGI(THROTTLE_TAG, "Speed limit: %u km/h", cap_kmh);
 }
 
 // Map a 0..255 throttle byte to the appropriate VESC command using smart-reverse logic:
@@ -222,6 +265,9 @@ static bool assist_erpm_window(float *min_erpm, float *max_erpm, float *release_
 static void send_throttle_task(void *pvParameters) {
     smart_reverse_t smart_rev = {0};
     assist_push_t assist = {0};
+    // Speed limit governor: one computation from the dominant motor's ERPM,
+    // broadcast to every motor - see speed_limit.h for why not per-motor.
+    speed_limit_t speed_limit_state = {0};
 
     while (1) {
         // Failsafe task owns the motors while active — do not inject throttle.
@@ -287,7 +333,21 @@ static void send_throttle_task(void *pvParameters) {
                         // Moving reverse, rider wants forward — brake first.
                         bldc_interface_can_set_current_brake_rel_all(magnitude);
                     } else {
-                        // Stopped or already forward — drive forward.
+                        // Stopped or already forward — scaled by the ride
+                        // profile, then ceilinged by the speed limit
+                        // governor (speed_limit.h) near the cap.
+                        magnitude *= atomic_load(&current_scale_pct) / 100.0f;
+                        uint8_t cap_kmh = atomic_load(&speed_limit_kmh);
+                        float erpm_per_kmh;
+                        if (cap_kmh > 0 && erpm_per_kmh_factor(&erpm_per_kmh, NULL)) {
+                            magnitude = speed_limit_step(
+                                &speed_limit_state, (float)erpm,
+                                cap_kmh * erpm_per_kmh,
+                                SPEED_LIMIT_FULL_KMH * erpm_per_kmh, magnitude,
+                                THROTTLE_LOOP_MS / 1000.0f);
+                        } else {
+                            speed_limit_state.current = magnitude; // stay caught up for when it's turned on
+                        }
                         bldc_interface_can_set_current_rel_all(magnitude);
                     }
                 } else {
@@ -302,7 +362,8 @@ static void send_throttle_task(void *pvParameters) {
                         bldc_interface_can_set_current_brake_rel_all(magnitude);
                     } else {
                         // Stopped or already reverse — drive reverse.
-                        bldc_interface_can_set_current_rel_all(-magnitude);
+                        bldc_interface_can_set_current_rel_all(
+                            -magnitude * atomic_load(&current_scale_pct) / 100.0f);
                     }
                 }
             }

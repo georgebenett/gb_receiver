@@ -65,11 +65,14 @@ int32_t bldc_interface_can_get_erpm_at(uint8_t index);      // ERPM for detected
 uint8_t bldc_interface_can_get_id_at(uint8_t index);        // VESC ID for detected slot [index]
 
 // Multi-VESC commands — addressed to every active VESC independently, never via CAN forwarding.
-// Both inputs are 0.0..1.0 fractions of each VESC's own configured |l_current_max| / |l_current_min|,
-// making behavior portable across builds with different motor / battery configs.
+// Both inputs are 0.0..1.0 fractions of each VESC's own configured |l_current_max| / |l_current_min|.
 void bldc_interface_can_set_current_rel_all(float current_rel);        // forward drive (0..1)
 void bldc_interface_can_set_current_brake_rel_all(float current_rel);  // regen brake (0..1)
 void bldc_interface_can_set_duty_all(float duty);                      // duty cycle (-1..1)
+// No per-VESC RPM/speed command: same ERPM on two VESCs isn't the same real
+// wheel speed (gearing/calibration differ), so each one's own closed loop
+// converges on mismatched real speeds. Speed limiting uses current_rel
+// instead — see speed_limit.h in main/.
 
 // Send zero-current and zero-brake to every active VESC. Use at boot or after CAN init
 // to guarantee motors are in a known-quiescent state before any throttle source starts.
