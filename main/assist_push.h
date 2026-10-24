@@ -43,7 +43,7 @@
 #define ASSIST_DECAY_MIN      10.0f
 #define ASSIST_DECAY_MAX      120.0f
 #define ASSIST_CURRENT_MIN    0.05f
-#define ASSIST_CURRENT_MAX    0.50f
+#define ASSIST_CURRENT_MAX    0.80f
 #define ASSIST_CURRENT_SLEW   1.0f   // max change in that fraction per second
 #define ASSIST_RISE_ERPM      50.0f  // per-sample rise that reads as the rider pushing
 #define ASSIST_RISE_SAMPLES   3      // consecutive rising samples before assist takes it
