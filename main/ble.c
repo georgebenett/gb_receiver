@@ -36,6 +36,7 @@
 #include "bldc_interface_can.h"
 #include "aux_output.h"
 #include "wifi_ap.h"
+#include "esp_ota_ops.h"
 
 extern mc_values* get_stored_vesc_values(void);
 extern bms_values_t* get_stored_bms_values(void);
@@ -63,6 +64,15 @@ extern mc_temp_config_t* get_stored_mc_temp_config(void);
 #define BLE_CMD_SET_SPEED_LIMIT     0x06   // Command: [0x06, cap_kmh] speed limit from the remote, 0 = off
 #define BLE_CMD_GET_FW_VERSION      0x07   // Command: [0x07], replied on status as [0x07, major, minor, patch, mac x6]
 #define BLE_STATUS_FRAME            0x08   // Status, once a second: see send_status_frame()
+// Firmware update from the remote. Every reply is [cmd, status, next_offset u32 LE] on status.
+#define BLE_CMD_OTA_BEGIN           0x0A   // Command: [0x0A, size u32]
+#define BLE_CMD_OTA_DATA            0x0B   // Command: [0x0B, offset u32, bytes...]
+#define BLE_CMD_OTA_END             0x0C   // Command: [0x0C] verify, switch boot slot, reboot
+#define OTA_ST_OK                   0
+#define OTA_ST_REFUSED              1      // wheels turning, or no update in progress
+#define OTA_ST_FLASH_ERR            2
+#define OTA_ST_BAD_OFFSET           3      // next_offset says where to resume
+#define OTA_MAX_STANDSTILL_ERPM     100.0f
 
 
 static const uint16_t spp_service_uuid = 0xABF0;
@@ -105,6 +115,12 @@ static bool enable_data_ntf = false;
 static bool is_connected = false;
 static bool is_authenticated = false;  // Connection is encrypted/authenticated
 static bool remote_shutdown_requested = false;  // BLE_CMD_SHUTDOWN seen before disconnect
+
+// BLE firmware update in progress (0 = none). Throttle is held neutral while set.
+static esp_ota_handle_t ota_handle = 0;
+static const esp_partition_t *ota_part = NULL;
+static uint32_t ota_size = 0;
+static uint32_t ota_written = 0;
 
 static float trip_km = 0.0f;
 static uint32_t trip_last_update_ms = 0;
@@ -447,6 +463,96 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
     }
 }
 
+static void ota_reply(uint8_t cmd, uint8_t status)
+{
+    uint8_t rsp[6] = {cmd, status};
+    put_u32(&rsp[2], ota_written);
+    esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id,
+        spp_handle_table[SPP_IDX_SPP_STATUS_VAL], sizeof(rsp), rsp, false);
+}
+
+static void ota_cancel(void)
+{
+    if (ota_handle) {
+        esp_ota_abort(ota_handle);
+        ota_handle = 0;
+        ESP_LOGW(GATTS_TABLE_TAG, "BLE OTA aborted at %" PRIu32 "/%" PRIu32, ota_written, ota_size);
+    }
+}
+
+static void ble_ota_reboot_task(void *arg)
+{
+    vTaskDelay(pdMS_TO_TICKS(500));  // let the END reply leave the radio
+    esp_restart();
+}
+
+// Runs on the BTC task. Flash erases (sequential, 4 KB at a time) stall it for
+// tens of ms; fine while stationary with throttle held neutral.
+// ponytail: stop-and-wait, one chunk per round trip (~2 min for 1.4 MB). A send
+// window on the remote is the upgrade if that is too slow.
+static void ota_handle_cmd(const uint8_t *v, uint16_t len)
+{
+    uint8_t cmd = v[0];
+    if (cmd == BLE_CMD_OTA_BEGIN && len >= 5) {
+        ota_cancel();
+        ota_written = 0;
+        if (fabsf(get_stored_vesc_values()->rpm) > OTA_MAX_STANDSTILL_ERPM) {
+            ota_reply(cmd, OTA_ST_REFUSED);
+            return;
+        }
+        ota_size = v[1] | (v[2] << 8) | (v[3] << 16) | ((uint32_t)v[4] << 24);
+        ota_part = esp_ota_get_next_update_partition(NULL);
+        if (ota_part == NULL || ota_size > ota_part->size ||
+            esp_ota_begin(ota_part, OTA_WITH_SEQUENTIAL_WRITES, &ota_handle) != ESP_OK) {
+            ota_handle = 0;
+            ota_reply(cmd, OTA_ST_FLASH_ERR);
+            return;
+        }
+        throttle_reset_value();
+        ESP_LOGW(GATTS_TABLE_TAG, "BLE OTA started: %" PRIu32 " bytes -> %s", ota_size, ota_part->label);
+        ota_reply(cmd, OTA_ST_OK);
+    } else if (cmd == BLE_CMD_OTA_DATA && len > 5) {
+        if (!ota_handle) {
+            ota_reply(cmd, OTA_ST_REFUSED);
+            return;
+        }
+        uint32_t off = v[1] | (v[2] << 8) | (v[3] << 16) | ((uint32_t)v[4] << 24);
+        uint32_t n = len - 5;
+        if (off != ota_written) {
+            ota_reply(cmd, OTA_ST_BAD_OFFSET);  // e.g. a resent chunk whose ack was lost
+            return;
+        }
+        if (ota_written + n > ota_size || esp_ota_write(ota_handle, &v[5], n) != ESP_OK) {
+            ota_cancel();
+            ota_reply(cmd, OTA_ST_FLASH_ERR);
+            return;
+        }
+        ota_written += n;
+        ota_reply(cmd, OTA_ST_OK);
+    } else if (cmd == BLE_CMD_OTA_END) {
+        if (!ota_handle || ota_written != ota_size) {
+            ota_cancel();
+            ota_reply(cmd, OTA_ST_REFUSED);
+            return;
+        }
+        // esp_ota_end checks the image (magic, chip, SHA-256) before we switch to it.
+        esp_err_t err = esp_ota_end(ota_handle);
+        ota_handle = 0;
+        if (err == ESP_OK) {
+            err = esp_ota_set_boot_partition(ota_part);
+        }
+        if (err != ESP_OK) {
+            ESP_LOGE(GATTS_TABLE_TAG, "BLE OTA rejected: %s", esp_err_to_name(err));
+            ota_reply(cmd, OTA_ST_FLASH_ERR);
+            return;
+        }
+        ESP_LOGW(GATTS_TABLE_TAG, "BLE OTA complete, rebooting");
+        remote_shutdown_requested = true;  // the reboot's disconnect is not a lost link
+        ota_reply(cmd, OTA_ST_OK);
+        xTaskCreate(ble_ota_reboot_task, "ota_reboot", 2048, NULL, 1, NULL);
+    }
+}
+
 static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param)
 {
     esp_ble_gatts_cb_param_t *p_data = (esp_ble_gatts_cb_param_t *) param;
@@ -504,6 +610,12 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                 }
 
                 if (res == SPP_IDX_SPP_DATA_RECV_VAL) {
+                    if (ota_handle) {
+                        // Mid-update: hold neutral whatever the lever says.
+                        throttle_reset_value();
+                        throttle_reset_timeout();
+                        break;
+                    }
                     if (p_data->write.len < 3) {
                         ESP_LOGW(GATTS_TABLE_TAG, "Throttle write too short: %d bytes", p_data->write.len);
                         break;
@@ -558,6 +670,8 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                         throttle_set_speed_limit(p_data->write.value[1]);
                     } else if (cmd == BLE_CMD_SET_CURRENT_SCALE && p_data->write.len >= 2) {
                         throttle_set_current_scale(p_data->write.value[1]);
+                    } else if (cmd >= BLE_CMD_OTA_BEGIN && cmd <= BLE_CMD_OTA_END) {
+                        ota_handle_cmd(p_data->write.value, p_data->write.len);
                     }
                 }
             }
@@ -601,6 +715,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
         	break;
     	case ESP_GATTS_DISCONNECT_EVT:
             spp_mtu_size = 23;
+    	    ota_cancel();
     	    is_connected = false;
     	    is_authenticated = false;  // Reset authentication on disconnect
     	    throttle_reset_value();

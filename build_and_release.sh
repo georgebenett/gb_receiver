@@ -329,3 +329,6 @@ fi
 print_info "Release created successfully!"
 print_info "View release at: https://github.com/$REPO/releases/tag/v$VERSION"
 
+# Bundle this release into the remotes. Commit it there with the next remote release.
+./bundle_to_remotes.sh --no-build
+

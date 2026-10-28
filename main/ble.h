@@ -12,7 +12,7 @@
 #include <string.h>
 #include <stdbool.h>
 #define SPP_DATA_MAX_LEN           (512)
-#define SPP_CMD_MAX_LEN            (20)
+#define SPP_CMD_MAX_LEN            (512)  // room for BLE OTA chunks
 #define SPP_STATUS_MAX_LEN         (20)
 ///Attributes State Machine
 enum{
