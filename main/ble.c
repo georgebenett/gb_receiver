@@ -39,42 +39,22 @@
 #include "esp_ota_ops.h"
 #include "freertos/semphr.h"
 #include "miniz.h"
+#include "gb_protocol.h"
 
 extern mc_values* get_stored_vesc_values(void);
 extern bms_values_t* get_stored_bms_values(void);
 extern mc_temp_config_t* get_stored_mc_temp_config(void);
 
 #define GATTS_TABLE_TAG  "GATTS_SPP_DEMO"
-#define CLIENT_NAME      "GS-THUMB"
 
 #define TRIP_NVS_NAMESPACE   "trip_data"
 #define TRIP_NVS_KEY_KM      "trip_km"
 #define TRIP_NVS_SAVE_INTERVAL_KM 0.1f  // save every 100 meters
 
 #define ESP_SPP_APP_ID              0x56
-#define SAMPLE_DEVICE_NAME          CLIENT_NAME
 #define SPP_SVC_INST_ID             0
 
 // BLE Security Configuration
-#define BLE_PASSKEY                 483265  // Fixed passkey for pairing
-#define BLE_CMD_RESET_ODOMETER      0x01   // Command: reset trip odometer
-#define BLE_CMD_SHUTDOWN            0x02   // Command: remote is powering off intentionally
-#define BLE_CMD_SET_SMART_REVERSE   0x03   // Command: [0x03, enabled] smart reverse setting from the remote
-#define BLE_CMD_SET_ASSIST_PUSH      0x04   // Command: [0x04, enabled, strength%, decay] from the remote
-#define BLE_CMD_SET_NO_REVERSE      0x05   // Command: [0x05, enabled] reverse lockout from the remote
-#define BLE_CMD_SET_CURRENT_SCALE   0x09   // Command: [0x09, pct] drive current share from the remote's ride profile
-#define BLE_CMD_SET_SPEED_LIMIT     0x06   // Command: [0x06, cap_kmh] speed limit from the remote, 0 = off
-#define BLE_CMD_GET_FW_VERSION      0x07   // Command: [0x07], replied on status as [0x07, major, minor, patch, mac x6]
-#define BLE_STATUS_FRAME            0x08   // Status, once a second: see send_status_frame()
-// Firmware update from the remote. Every reply is [cmd, status, next_offset u32 LE] on status.
-#define BLE_CMD_OTA_BEGIN           0x0A   // Command: [0x0A, zlib_len u32, image_len u32] -> ERASING, then OK
-#define BLE_CMD_OTA_DATA            0x0B   // Command: [0x0B, offset u32, zlib bytes...]
-#define BLE_CMD_OTA_END             0x0C   // Command: [0x0C] verify, switch boot slot, reboot; early, it aborts
-#define OTA_ST_OK                   0
-#define OTA_ST_REFUSED              1      // wheels turning, or no update in progress
-#define OTA_ST_FLASH_ERR            2
-#define OTA_ST_BAD_OFFSET           3      // next_offset says where to resume
-#define OTA_ST_ERASING              4      // BEGIN accepted; OK follows once erased
 #define OTA_MAX_STANDSTILL_ERPM     100.0f
 #define OTA_ACK_EVERY               4096   // bytes between DATA acks
 #define OTA_WINDOW                  8192   // inflate ring; the remote packs with an 8 KB zlib window
@@ -82,25 +62,7 @@ extern mc_temp_config_t* get_stored_mc_temp_config(void);
 #define OTA_SECTOR                  0x1000
 
 
-static const uint16_t spp_service_uuid = 0xABF0;
-#define ESP_GATT_UUID_SPP_DATA_RECEIVE      0xABF1
-#define ESP_GATT_UUID_SPP_DATA_NOTIFY       0xABF2
-#define ESP_GATT_UUID_SPP_COMMAND_RECEIVE   0xABF3
-#define ESP_GATT_UUID_SPP_COMMAND_NOTIFY    0xABF4
-
-/* Little-endian writers for the telemetry frame. Return the byte count so the
- * packer reads as `idx += put_u16(&buffer[idx], value);`. */
-static uint16_t put_u16(uint8_t *p, uint16_t v) {
-    p[0] = v & 0xFF;
-    p[1] = (v >> 8) & 0xFF;
-    return 2;
-}
-
-static uint16_t put_u32(uint8_t *p, uint32_t v) {
-    put_u16(p, (uint16_t)(v & 0xFFFF));
-    put_u16(p + 2, (uint16_t)(v >> 16));
-    return 4;
-}
+static const uint16_t spp_service_uuid = GB_UUID_SERVICE;
 
 static void send_telemetry_task(void *pvParameters);
 static void trip_nvs_load(void);
@@ -121,7 +83,7 @@ static esp_gatt_if_t spp_gatts_if = 0xff;
 static bool enable_data_ntf = false;
 static bool is_connected = false;
 static bool is_authenticated = false;  // Connection is encrypted/authenticated
-static bool remote_shutdown_requested = false;  // BLE_CMD_SHUTDOWN seen before disconnect
+static bool remote_shutdown_requested = false;  // GB_CMD_SHUTDOWN seen before disconnect
 
 // BLE firmware update in progress. Throttle is held neutral while set.
 static volatile bool ota_active = false;
@@ -179,17 +141,17 @@ static const uint16_t character_client_config_uuid = ESP_GATT_UUID_CHAR_CLIENT_C
 static const uint8_t char_prop_read_notify = ESP_GATT_CHAR_PROP_BIT_READ|ESP_GATT_CHAR_PROP_BIT_NOTIFY;
 static const uint8_t char_prop_read_write = ESP_GATT_CHAR_PROP_BIT_WRITE_NR|ESP_GATT_CHAR_PROP_BIT_READ;
 
-static const uint16_t spp_data_receive_uuid = ESP_GATT_UUID_SPP_DATA_RECEIVE;
+static const uint16_t spp_data_receive_uuid = GB_UUID_THROTTLE;
 static const uint8_t  spp_data_receive_val[20] = {0x00};
 
-static const uint16_t spp_data_notify_uuid = ESP_GATT_UUID_SPP_DATA_NOTIFY;
+static const uint16_t spp_data_notify_uuid = GB_UUID_TELEMETRY;
 static const uint8_t  spp_data_notify_val[20] = {0x00};
 static const uint8_t  spp_data_notify_ccc[2] = {0x00, 0x00};
 
-static const uint16_t spp_command_uuid = ESP_GATT_UUID_SPP_COMMAND_RECEIVE;
+static const uint16_t spp_command_uuid = GB_UUID_COMMAND;
 static const uint8_t  spp_command_val[10] = {0x00};
 
-static const uint16_t spp_status_uuid = ESP_GATT_UUID_SPP_COMMAND_NOTIFY;
+static const uint16_t spp_status_uuid = GB_UUID_STATUS;
 static const uint8_t  spp_status_val[10] = {0x00};
 static const uint8_t  spp_status_ccc[2] = {0x00, 0x00};
 
@@ -206,8 +168,9 @@ static const esp_gatts_attr_db_t spp_gatt_db[SPP_IDX_NB] =
     CHAR_DECLARATION_SIZE,CHAR_DECLARATION_SIZE, (uint8_t *)&char_prop_read_write}},
 
     //SPP -  data receive characteristic Value
+    // Writes need an encrypted link: the stack drops them before SMP is done.
     [SPP_IDX_SPP_DATA_RECV_VAL]             	=
-    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&spp_data_receive_uuid, ESP_GATT_PERM_WRITE,
+    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&spp_data_receive_uuid, ESP_GATT_PERM_WRITE_ENCRYPTED,
     SPP_DATA_MAX_LEN,sizeof(spp_data_receive_val), (uint8_t *)spp_data_receive_val}},
 
     //SPP -  data notify characteristic Declaration
@@ -232,7 +195,7 @@ static const esp_gatts_attr_db_t spp_gatt_db[SPP_IDX_NB] =
 
     //SPP -  command characteristic Value
     [SPP_IDX_SPP_COMMAND_VAL]                 =
-    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&spp_command_uuid, ESP_GATT_PERM_READ|ESP_GATT_PERM_WRITE,
+    {{ESP_GATT_AUTO_RSP}, {ESP_UUID_LEN_16, (uint8_t *)&spp_command_uuid, ESP_GATT_PERM_READ|ESP_GATT_PERM_WRITE_ENCRYPTED,
     SPP_CMD_MAX_LEN,sizeof(spp_command_val), (uint8_t *)spp_command_val}},
 
     //SPP -  status characteristic Declaration
@@ -382,7 +345,7 @@ static void wifi_idle_timer_kick(void)
 static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
 {
     esp_err_t err;
-    ESP_LOGI(GATTS_TABLE_TAG, "GAP_EVT, event %d", event);
+    ESP_LOGD(GATTS_TABLE_TAG, "GAP_EVT, event %d", event);
 
     switch (event) {
     case ESP_GAP_BLE_ADV_DATA_RAW_SET_COMPLETE_EVT:
@@ -405,8 +368,8 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
             uint8_t *adv_name = esp_ble_resolve_adv_data(r->ble_adv,
                                                         ESP_BLE_AD_TYPE_NAME_CMPL,
                                                         &adv_name_len);
-            if (adv_name == NULL || adv_name_len < 6 ||
-                memcmp(adv_name, "GS-REM", 6) != 0) {
+            if (adv_name == NULL || adv_name_len < strlen(GB_REMOTE_ADV_NAME) ||
+                memcmp(adv_name, GB_REMOTE_ADV_NAME, strlen(GB_REMOTE_ADV_NAME)) != 0) {
                 break;
             }
             // De-dup by MAC; refresh RSSI on repeat sightings.
@@ -475,7 +438,7 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
 static void ota_reply(uint8_t cmd, uint8_t status)
 {
     uint8_t rsp[6] = {cmd, status};
-    put_u32(&rsp[2], ota_written);
+    gb_wr_u32(&rsp[2], ota_written);
     esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id,
         spp_handle_table[SPP_IDX_SPP_STATUS_VAL], sizeof(rsp), rsp, false);
 }
@@ -555,7 +518,7 @@ static void ota_erase_task(void *arg)
     throttle_start_timeout_monitor();
     ESP_LOGW(GATTS_TABLE_TAG, "BLE OTA %s: %" PRIu32 " -> %" PRIu32 " bytes into %s",
              err == ESP_OK ? "started" : "erase failed", ota_size, ota_raw, ota_part->label);
-    ota_reply(BLE_CMD_OTA_BEGIN, err == ESP_OK ? OTA_ST_OK : OTA_ST_FLASH_ERR);
+    ota_reply(GB_CMD_OTA_BEGIN, err == ESP_OK ? GB_OTA_OK : GB_OTA_FLASH_ERR);
     vTaskDelete(NULL);
 }
 
@@ -639,16 +602,16 @@ void ble_ota_slot_hold(bool hold)
 static void ota_handle_cmd(const uint8_t *v, uint16_t len)
 {
     uint8_t cmd = v[0];
-    if (cmd == BLE_CMD_OTA_BEGIN && len >= 9) {
+    if (cmd == GB_CMD_OTA_BEGIN && len >= 9) {
         if (ota_erasing) {
             ota_cancel();  // the erase task sees it and stops
-            ota_reply(cmd, OTA_ST_REFUSED);
+            ota_reply(cmd, GB_OTA_REFUSED);
             return;
         }
         ota_cancel();
         ota_written = 0;
         if (fabsf(get_stored_vesc_values()->rpm) > OTA_MAX_STANDSTILL_ERPM) {
-            ota_reply(cmd, OTA_ST_REFUSED);
+            ota_reply(cmd, GB_OTA_REFUSED);
             return;
         }
         ota_size = v[1] | (v[2] << 8) | (v[3] << 16) | ((uint32_t)v[4] << 24);
@@ -660,7 +623,7 @@ static void ota_handle_cmd(const uint8_t *v, uint16_t len)
         }
         if (ota_part == NULL || ota_size == 0 || ota_raw == 0 || ota_raw > ota_part->size ||
             inf == NULL || inf_ring == NULL) {
-            ota_reply(cmd, OTA_ST_FLASH_ERR);
+            ota_reply(cmd, GB_OTA_FLASH_ERR);
             return;
         }
         tinfl_init(inf);
@@ -669,21 +632,21 @@ static void ota_handle_cmd(const uint8_t *v, uint16_t len)
         ota_out = 0;
         throttle_reset_value();
         ota_erasing = true;
-        ota_reply(cmd, OTA_ST_ERASING);
+        ota_reply(cmd, GB_OTA_ERASING);
         if (xTaskCreate(ota_erase_task, "ota_erase", 4096, (void *)(uintptr_t)ota_epoch, 4, NULL) != pdPASS) {
             ota_erasing = false;
-            ota_reply(cmd, OTA_ST_FLASH_ERR);
+            ota_reply(cmd, GB_OTA_FLASH_ERR);
         }
-    } else if (cmd == BLE_CMD_OTA_DATA && len > 5) {
+    } else if (cmd == GB_CMD_OTA_DATA && len > 5) {
         if (!ota_active) {
-            ota_reply(cmd, OTA_ST_REFUSED);
+            ota_reply(cmd, GB_OTA_REFUSED);
             return;
         }
         uint32_t off = v[1] | (v[2] << 8) | (v[3] << 16) | ((uint32_t)v[4] << 24);
         uint32_t n = len - 5;
         if (off != ota_written) {
             ota_bad++;
-            ota_reply(cmd, OTA_ST_BAD_OFFSET);  // e.g. a resent chunk whose ack was lost
+            ota_reply(cmd, GB_OTA_BAD_OFFSET);  // e.g. a resent chunk whose ack was lost
             return;
         }
         int64_t t = esp_timer_get_time();
@@ -693,7 +656,7 @@ static void ota_handle_cmd(const uint8_t *v, uint16_t len)
         ota_busy_us += esp_timer_get_time() - t;
         if (err != ESP_OK) {
             ota_cancel();
-            ota_reply(cmd, OTA_ST_FLASH_ERR);
+            ota_reply(cmd, GB_OTA_FLASH_ERR);
             return;
         }
         ota_written += n;
@@ -701,13 +664,13 @@ static void ota_handle_cmd(const uint8_t *v, uint16_t len)
         // with an eighth of the notifications.
         if (ota_written / OTA_ACK_EVERY != (ota_written - n) / OTA_ACK_EVERY ||
             ota_written == ota_size) {
-            ota_reply(cmd, OTA_ST_OK);
+            ota_reply(cmd, GB_OTA_OK);
         }
-    } else if (cmd == BLE_CMD_OTA_END) {
+    } else if (cmd == GB_CMD_OTA_END) {
         if (!ota_active || ota_written != ota_size || inf_status != TINFL_STATUS_DONE ||
             ota_out != ota_raw) {
             ota_cancel();
-            ota_reply(cmd, OTA_ST_REFUSED);
+            ota_reply(cmd, GB_OTA_REFUSED);
             return;
         }
         ota_active = false;
@@ -715,7 +678,7 @@ static void ota_handle_cmd(const uint8_t *v, uint16_t len)
         esp_err_t err = esp_ota_set_boot_partition(ota_part);
         if (err != ESP_OK) {
             ESP_LOGE(GATTS_TABLE_TAG, "BLE OTA rejected: %s", esp_err_to_name(err));
-            ota_reply(cmd, OTA_ST_FLASH_ERR);
+            ota_reply(cmd, GB_OTA_FLASH_ERR);
             xTaskNotifyGive(ota_prep_handle);
             return;
         }
@@ -723,7 +686,7 @@ static void ota_handle_cmd(const uint8_t *v, uint16_t len)
                  "%" PRIu32 " out-of-order chunks), rebooting",
                  (esp_timer_get_time() - ota_t0_us) / 1000, ota_busy_us / 1000, ota_bad);
         remote_shutdown_requested = true;  // the reboot's disconnect is not a lost link
-        ota_reply(cmd, OTA_ST_OK);
+        ota_reply(cmd, GB_OTA_OK);
         xTaskCreate(ble_ota_reboot_task, "ota_reboot", 2048, NULL, 1, NULL);
     }
 }
@@ -737,7 +700,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     switch (event) {
     	case ESP_GATTS_REG_EVT:
     	    ESP_LOGI(GATTS_TABLE_TAG, "%s %d", __func__, __LINE__);
-        	esp_ble_gap_set_device_name(SAMPLE_DEVICE_NAME);
+        	esp_ble_gap_set_device_name(GB_RECEIVER_ADV_NAME);
 
         	paired_load_nvs();
         	whitelist_sync();
@@ -812,40 +775,42 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                         break;
                     }
                     uint8_t cmd = p_data->write.value[0];
-                    if (cmd == BLE_CMD_RESET_ODOMETER) {
+                    if (cmd == GB_CMD_RESET_ODOMETER) {
                         ble_reset_trip_distance();
-                        uint8_t ack[2] = {BLE_CMD_RESET_ODOMETER, 0x00};
+                        uint8_t ack[2] = {GB_CMD_RESET_ODOMETER, 0x00};
                         esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id,
                             spp_handle_table[SPP_IDX_SPP_STATUS_VAL],
                             sizeof(ack), ack, false);
                         ESP_LOGI(GATTS_TABLE_TAG, "Odometer reset via BLE command");
-                    } else if (cmd == BLE_CMD_GET_FW_VERSION) {
-                        uint8_t rsp[10] = {BLE_CMD_GET_FW_VERSION};
-                        sscanf(FW_VERSION, "%hhu.%hhu.%hhu", &rsp[1], &rsp[2], &rsp[3]);
+                    } else if (cmd == GB_CMD_GET_FW_VERSION) {
+                        uint8_t rsp[10] = {GB_CMD_GET_FW_VERSION};
+                        rsp[1] = FW_VERSION_MAJOR;
+                        rsp[2] = FW_VERSION_MINOR;
+                        rsp[3] = FW_VERSION_PATCH;
                         esp_read_mac(&rsp[4], ESP_MAC_BT);
                         esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id,
                             spp_handle_table[SPP_IDX_SPP_STATUS_VAL],
                             sizeof(rsp), rsp, false);
-                    } else if (cmd == BLE_CMD_SHUTDOWN) {
+                    } else if (cmd == GB_CMD_SHUTDOWN) {
                         remote_shutdown_requested = true;
                         throttle_reset_value();
                         ESP_LOGI(GATTS_TABLE_TAG, "Remote powering off - suppressing failsafe on disconnect");
-                    } else if (cmd == BLE_CMD_SET_SMART_REVERSE && p_data->write.len >= 2) {
+                    } else if (cmd == GB_CMD_SET_SMART_REVERSE && p_data->write.len >= 2) {
                         throttle_set_smart_reverse(p_data->write.value[1] != 0);
-                    } else if (cmd == BLE_CMD_SET_NO_REVERSE && p_data->write.len >= 2) {
+                    } else if (cmd == GB_CMD_SET_NO_REVERSE && p_data->write.len >= 2) {
                         throttle_set_no_reverse(p_data->write.value[1] != 0);
-                    } else if (cmd == BLE_CMD_SET_ASSIST_PUSH && p_data->write.len >= 2) {
+                    } else if (cmd == GB_CMD_SET_ASSIST_PUSH && p_data->write.len >= 2) {
                         throttle_set_assist_push(p_data->write.value[1] != 0);
                         // Older remotes send only the flag; they keep the defaults.
                         if (p_data->write.len >= 4) {
                             throttle_set_assist_params(p_data->write.value[2],
                                                        p_data->write.value[3]);
                         }
-                    } else if (cmd == BLE_CMD_SET_SPEED_LIMIT && p_data->write.len >= 2) {
+                    } else if (cmd == GB_CMD_SET_SPEED_LIMIT && p_data->write.len >= 2) {
                         throttle_set_speed_limit(p_data->write.value[1]);
-                    } else if (cmd == BLE_CMD_SET_CURRENT_SCALE && p_data->write.len >= 2) {
+                    } else if (cmd == GB_CMD_SET_CURRENT_SCALE && p_data->write.len >= 2) {
                         throttle_set_current_scale(p_data->write.value[1]);
-                    } else if (cmd >= BLE_CMD_OTA_BEGIN && cmd <= BLE_CMD_OTA_END) {
+                    } else if (cmd >= GB_CMD_OTA_BEGIN && cmd <= GB_CMD_OTA_END) {
                         ota_handle_cmd(p_data->write.value, p_data->write.len);
                     }
                 }
@@ -1019,7 +984,7 @@ esp_err_t ble_spp_server_start(void)
     uint8_t key_size = 16;
     uint8_t init_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
     uint8_t rsp_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
-    uint32_t passkey = BLE_PASSKEY;
+    uint32_t passkey = CONFIG_GB_BLE_PASSKEY;
     uint8_t auth_option = ESP_BLE_ONLY_ACCEPT_SPECIFIED_AUTH_ENABLE;  // Only accept authenticated connections
     uint8_t oob_support = ESP_BLE_OOB_DISABLE;
 
@@ -1032,7 +997,6 @@ esp_err_t ble_spp_server_start(void)
     esp_ble_gap_set_security_param(ESP_BLE_SM_ONLY_ACCEPT_SPECIFIED_SEC_AUTH, &auth_option, sizeof(uint8_t));
     esp_ble_gap_set_security_param(ESP_BLE_SM_OOB_SUPPORT, &oob_support, sizeof(uint8_t));
 
-    ESP_LOGI(GATTS_TABLE_TAG, "BLE Security configured with passkey: %06lu", (unsigned long)passkey);
 
     trip_nvs_load();
 
@@ -1192,15 +1156,19 @@ static void trip_nvs_save(void) {
 static void send_status_frame(void) {
     uint8_t set[4];
     throttle_get_settings(set);
-    uint8_t buf[11] = {BLE_STATUS_FRAME};
-    buf[1] = (set[0] & 7) | (failsafe_is_active() << 3) |
-             ((get_stored_bms_values()->num_cells > 0) << 4);
-    buf[2] = get_stored_vesc_values()->fault_code;
-    buf[3] = failsafe_last_reason();
-    memcpy(&buf[4], &set[1], 3);
-    put_u32(&buf[7], (uint32_t)(esp_timer_get_time() / 1000000));
+    gb_status_frame_t f = {
+        .id = GB_STATUS_FRAME,
+        .flags = (set[0] & 7) | (failsafe_is_active() ? GB_STATUS_FLAG_FAILSAFE : 0) |
+                 (get_stored_bms_values()->num_cells > 0 ? GB_STATUS_FLAG_BMS : 0),
+        .vesc_fault = get_stored_vesc_values()->fault_code,
+        .failsafe_reason = failsafe_last_reason(),
+        .speed_limit_kmh = set[1],
+        .assist_strength_pct = set[2],
+        .assist_decay = set[3],
+        .uptime_s = (uint32_t)(esp_timer_get_time() / 1000000),
+    };
     esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id,
-        spp_handle_table[SPP_IDX_SPP_STATUS_VAL], sizeof(buf), buf, false);
+        spp_handle_table[SPP_IDX_SPP_STATUS_VAL], sizeof(f), (uint8_t *)&f, false);
 }
 
 static void send_telemetry_task(void *pvParameters) {
@@ -1214,55 +1182,35 @@ static void send_telemetry_task(void *pvParameters) {
             mc_values* vesc_values = get_stored_vesc_values();
             bms_values_t* bms_values = get_stored_bms_values();
 
-            // VESC (14) + BMS (41) + motor config (5) + aux state (1) + trip_km (4) = 65 bytes
-            uint8_t buffer[65];
-            int idx = 0;
-
-            // VESC block, bytes 0-13
-            idx += put_u16(&buffer[idx], (int16_t)(vesc_values->temp_mos * 100));
-            idx += put_u16(&buffer[idx], (int16_t)(vesc_values->temp_motor * 100));
-            idx += put_u16(&buffer[idx], (int16_t)(vesc_values->current_motor * 100));
-            idx += put_u16(&buffer[idx], (int16_t)(vesc_values->current_in * 100));
-            idx += put_u32(&buffer[idx], (uint32_t)(int32_t)vesc_values->rpm);
-            idx += put_u16(&buffer[idx], (int16_t)(vesc_values->v_in * 100));
-
-            // BMS block, bytes 14-54
-            idx += put_u16(&buffer[idx], (int16_t)(bms_values->total_voltage * 100));
-            idx += put_u16(&buffer[idx], (int16_t)(bms_values->current * 100));
-            idx += put_u16(&buffer[idx], (int16_t)(bms_values->remaining_capacity * 100));
-            idx += put_u16(&buffer[idx], (int16_t)(bms_values->nominal_capacity * 100));
-            buffer[idx++] = bms_values->num_cells;
-
-            // 16 cell voltages (mV), zero-padded past num_cells. The remote no
-            // longer displays these, but they hold the frame layout — later
-            // fields are read by fixed offset.
-            for (int i = 0; i < 16; i++) {
-                int16_t cell_mv = (i < bms_values->num_cells)
-                                      ? (int16_t)(bms_values->cell_voltages[i] * 1000)
-                                      : 0;
-                idx += put_u16(&buffer[idx], cell_mv);
+            gb_telemetry_t t = {
+                .temp_mos = (int16_t)(vesc_values->temp_mos * 100),
+                .temp_motor = (int16_t)(vesc_values->temp_motor * 100),
+                .current_motor = (int16_t)(vesc_values->current_motor * 100),
+                .current_in = (int16_t)(vesc_values->current_in * 100),
+                .erpm = (int32_t)vesc_values->rpm,
+                .v_in = (int16_t)(vesc_values->v_in * 100),
+                .bms_total_voltage = (int16_t)(bms_values->total_voltage * 100),
+                .bms_current = (int16_t)(bms_values->current * 100),
+                .bms_remaining_ah = (int16_t)(bms_values->remaining_capacity * 100),
+                .bms_nominal_ah = (int16_t)(bms_values->nominal_capacity * 100),
+                .bms_cells = bms_values->num_cells,
+                .aux_on = aux_output_get_state(),
+            };
+            // Cell voltages in mV, zero past num_cells. The remote doesn't show
+            // them, but they hold the frame layout.
+            for (int i = 0; i < 16 && i < bms_values->num_cells; i++) {
+                t.cell_mv[i] = (int16_t)(bms_values->cell_voltages[i] * 1000);
             }
 
-            // Pack compact mcconf temp data (motor poles, gear ratio, wheel diameter)
+            // Compact mcconf (motor poles, gear ratio, wheel diameter)
             mc_temp_config_t* mc_temp_conf = get_stored_mc_temp_config();
-            uint8_t motor_poles = 0;
-            uint16_t gear_ratio_scaled = 0;
-            uint16_t wheel_diameter_scaled = 0;
-
             if (mc_temp_conf != NULL && mc_temp_conf->valid) {
-                motor_poles = mc_temp_conf->motor_poles;
-                gear_ratio_scaled = (uint16_t)((mc_temp_conf->gear_ratio * 1000.0f) + 0.5f);
-                wheel_diameter_scaled = (uint16_t)((mc_temp_conf->wheel_diameter * 1000.0f) + 0.5f);
+                t.motor_poles = mc_temp_conf->motor_poles;
+                t.gear_ratio_x1000 = (uint16_t)((mc_temp_conf->gear_ratio * 1000.0f) + 0.5f);
+                t.wheel_diameter_mm = (uint16_t)((mc_temp_conf->wheel_diameter * 1000.0f) + 0.5f);
             }
 
-            buffer[idx++] = motor_poles;
-            idx += put_u16(&buffer[idx], gear_ratio_scaled);
-            idx += put_u16(&buffer[idx], wheel_diameter_scaled);
-
-            // Pack aux output state (byte 60)
-            buffer[idx++] = aux_output_get_state();
-
-            // Accumulate trip distance from ERPM and motor config (bytes 61-64)
+            // Accumulate trip distance from ERPM and motor config
             uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
             if (trip_last_update_ms > 0 && mc_temp_conf != NULL && mc_temp_conf->valid &&
                 mc_temp_conf->motor_poles > 0 && mc_temp_conf->gear_ratio > 0.0f &&
@@ -1270,7 +1218,7 @@ static void send_telemetry_task(void *pvParameters) {
                 float elapsed_hours = (now_ms - trip_last_update_ms) / 3600000.0f;
                 float pole_pairs = (float)mc_temp_conf->motor_poles / 2.0f;
                 float shaft_rpm = (float)vesc_values->rpm / pole_pairs;
-                float wheel_circumference_m = mc_temp_conf->wheel_diameter * (float)M_PI;
+                float wheel_circumference_m = mc_temp_conf->wheel_diameter * 3.14159265f;
                 float wheel_rpm = shaft_rpm / mc_temp_conf->gear_ratio;
                 float speed_kmh = wheel_rpm * wheel_circumference_m * 60.0f / 1000.0f;
                 if (speed_kmh < 0.0f) speed_kmh = -speed_kmh;
@@ -1284,11 +1232,11 @@ static void send_telemetry_task(void *pvParameters) {
                 trip_km_nvs_committed = trip_km;
             }
 
-            idx += put_u32(&buffer[idx], (uint32_t)(int32_t)(trip_km * 100.0f));
+            t.trip_km_x100 = (int32_t)(trip_km * 100.0f);
 
             esp_ble_gatts_send_indicate(spp_gatts_if, spp_conn_id,
                 spp_handle_table[SPP_IDX_SPP_DATA_NTY_VAL],
-                sizeof(buffer), buffer, false);
+                sizeof(t), (uint8_t *)&t, false);
         }
         vTaskDelay(pdMS_TO_TICKS(100)); // Update every 100ms
     }

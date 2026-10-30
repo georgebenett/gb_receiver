@@ -1,0 +1,13 @@
+menu "GB Receiver"
+
+    config GB_BLE_PASSKEY
+        int "BLE pairing passkey"
+        range 0 999999
+        default 483265
+        help
+            Static passkey for pairing with a remote; gb_remote must use the
+            same value. The default is public: set your own in sdkconfig for
+            builds you ship. Bonded remotes keep working after a change, new
+            pairings need the matching value.
+
+endmenu
