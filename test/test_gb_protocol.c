@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /*
  * Host tests for the shared BLE protocol: a known telemetry byte vector
  * decodes to the expected fields (sign bits included), and the advertised

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /*
  * Host tests for assistive push. The properties that matter, in order:
  *   - it never resists the rider (current is never negative, and is zero

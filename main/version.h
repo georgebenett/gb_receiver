@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
 // The one version source; CMakeLists.txt derives PROJECT_VER and

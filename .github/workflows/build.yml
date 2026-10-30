@@ -1,0 +1,31 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.3
+          target: esp32c3
+          command: idf.py build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gb_receiver
+          path: |
+            build/gb_receiver.bin
+            build/gb_receiver.elf
+
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          for t in test/test_*.c; do
+            cc -Wall -Wextra -Werror -fsanitize=address,undefined -o t "$t" -lm && ./t
+          done

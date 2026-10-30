@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /*
  * Host tests for smart reverse: it must never engage while moving, never jump
  * past the duty cap, and must hand control back when the brake is released.

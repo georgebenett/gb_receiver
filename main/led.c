@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "led.h"
 #include "driver/ledc.h"
 #include "esp_log.h"

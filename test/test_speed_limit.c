@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /*
  * Host tests: well clear of the cap it never restricts; never exceeds the
  * rider's request; never goes negative; a FAST approach (whole handoff

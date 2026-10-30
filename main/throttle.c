@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 #include "throttle.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
