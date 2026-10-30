@@ -7,6 +7,13 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 # the bundled gb_receiver.bin to decide whether to push it over BLE.
 file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/main/version.h" _fw_ver REGEX "#define FW_VERSION")
 string(REGEX REPLACE ".*\"(.*)\".*" "\\1" PROJECT_VER "${_fw_ver}")
+string(REPLACE "." ";" _fw_parts "${PROJECT_VER}")
+list(GET _fw_parts 0 _major)
+list(GET _fw_parts 1 _minor)
+list(GET _fw_parts 2 _patch)
+idf_build_set_property(COMPILE_DEFINITIONS "-DFW_VERSION_MAJOR=${_major}" APPEND)
+idf_build_set_property(COMPILE_DEFINITIONS "-DFW_VERSION_MINOR=${_minor}" APPEND)
+idf_build_set_property(COMPILE_DEFINITIONS "-DFW_VERSION_PATCH=${_patch}" APPEND)
 # Re-configure on a version bump; otherwise incremental builds keep the old one.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/main/version.h")
 project(gb_receiver)

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build gb_receiver and copy its app image into the sibling remotes'
 # firmware/receiver_fw/. They flash it into rx_fw and push it to older
-# receivers over BLE.
+# receivers over BLE. Also syncs the shared main/gb_protocol.h.
 #   bundle_to_remotes.sh [image.bin]   copy that image instead of building
 #                                      (build_and_release.sh passes its release bin)
 set -e
@@ -27,6 +27,7 @@ for remote_fw in ../gb_remote/firmware ../gb_remote_dual_pro/firmware; do
         # The remote CMake flashes the one gb_receiver*.bin it finds, so drop older ones.
         rm -f "$remote_fw"/receiver_fw/gb_receiver*.bin
         cp "$BIN" "$remote_fw/receiver_fw/gb_receiver_v$VERSION.bin"
+        cp main/gb_protocol.h "$remote_fw/main/gb_protocol.h"
         echo "[INFO] Bundled receiver v$VERSION into $remote_fw/receiver_fw/"
     else
         echo "[WARN] $remote_fw not found, skipped"
