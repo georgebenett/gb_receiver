@@ -7,6 +7,7 @@
 
 #include <string.h>
 #include <inttypes.h>
+#include <stdatomic.h>
 #include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -86,7 +87,7 @@ static bool is_authenticated = false;  // Connection is encrypted/authenticated
 static bool remote_shutdown_requested = false;  // GB_CMD_SHUTDOWN seen before disconnect
 
 // BLE firmware update in progress. Throttle is held neutral while set.
-static volatile bool ota_active = false;
+static atomic_bool ota_active;
 static const esp_partition_t *ota_part = NULL;
 static uint32_t ota_size = 0;     // zlib stream bytes
 static uint32_t ota_written = 0;  // zlib stream bytes received
@@ -443,8 +444,8 @@ static void ota_reply(uint8_t cmd, uint8_t status)
         spp_handle_table[SPP_IDX_SPP_STATUS_VAL], sizeof(rsp), rsp, false);
 }
 
-static volatile bool ota_erasing = false;
-static volatile uint32_t ota_epoch = 0;  // bumped by every cancel, incl. disconnect
+static atomic_bool ota_erasing;
+static atomic_uint ota_epoch;  // bumped by every cancel, incl. disconnect
 static SemaphoreHandle_t slot_lock = NULL;  // the BEGIN erase vs the background one
 static TaskHandle_t ota_prep_handle = NULL;
 static bool slot_held = false;  // the Wi-Fi /api/ota upload owns the slot
@@ -851,7 +852,10 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     	        vTaskDelete(telemetry_task_handle);
     	        telemetry_task_handle = NULL;
     	    }
-    	    xTaskCreate(send_telemetry_task, "telemetry", 4096, NULL, 5, &telemetry_task_handle);
+    	    if (xTaskCreate(send_telemetry_task, "telemetry", 4096, NULL, 5, &telemetry_task_handle) != pdPASS) {
+    	        telemetry_task_handle = NULL;
+    	        ESP_LOGE(GATTS_TABLE_TAG, "No memory for the telemetry task");  // throttle still works
+    	    }
         	break;
     	case ESP_GATTS_DISCONNECT_EVT:
             spp_mtu_size = 23;
@@ -964,9 +968,9 @@ esp_err_t ble_spp_server_start(void)
     esp_ble_gap_register_callback(gap_event_handler);
     esp_ble_gatts_app_register(ESP_SPP_APP_ID);
 
-    xTaskCreate(adv_task, "ble_adv", 2048, NULL, 5, &adv_task_handle);
+    ESP_ERROR_CHECK(xTaskCreate(adv_task, "ble_adv", 2048, NULL, 5, &adv_task_handle) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
     slot_lock = xSemaphoreCreateMutex();
-    xTaskCreate(ota_prep_task, "ota_prep", 3072, NULL, 1, &ota_prep_handle);
+    ESP_ERROR_CHECK(xTaskCreate(ota_prep_task, "ota_prep", 3072, NULL, 1, &ota_prep_handle) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
     xTaskNotifyGive(ota_prep_handle);
     wifi_idle_timer = xTimerCreate("wifi_idle",
                                    pdMS_TO_TICKS(WIFI_AP_IDLE_TIMEOUT_MS),

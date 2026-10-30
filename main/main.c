@@ -161,7 +161,7 @@ void app_main(void) {
     // MC config will be requested when BLE connects (see ble.c ESP_GATTS_CONNECT_EVT)
 
     // Start CAN RX task to process incoming CAN frames
-    xTaskCreate(bldc_interface_can_rx_task, "can_rx_task", 4096, NULL, 5, NULL);
-    xTaskCreate(vesc_task, "vesc_task", 4096, NULL, 5, NULL);
-    xTaskCreate(ota_boot_verifier_task, "ota_verify", 2048, NULL, 1, NULL);
+    ESP_ERROR_CHECK(xTaskCreate(bldc_interface_can_rx_task, "can_rx_task", 4096, NULL, 5, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
+    ESP_ERROR_CHECK(xTaskCreate(vesc_task, "vesc_task", 4096, NULL, 5, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
+    ESP_ERROR_CHECK(xTaskCreate(ota_boot_verifier_task, "ota_verify", 2048, NULL, 1, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
 }

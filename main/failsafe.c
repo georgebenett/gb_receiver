@@ -5,6 +5,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <math.h>
+#include <stdatomic.h>
 
 extern mc_temp_config_t *get_stored_mc_temp_config(void);
 
@@ -33,8 +34,8 @@ static const char *TAG = "FAILSAFE";
 #define FAILSAFE_TASK_PRIORITY   10
 #define FAILSAFE_TASK_STACK      4096
 
-static volatile bool failsafe_active = false;
-static volatile failsafe_reason_t last_reason = FAILSAFE_REASON_MANUAL;
+static atomic_bool failsafe_active;
+static _Atomic failsafe_reason_t last_reason = FAILSAFE_REASON_MANUAL;
 static TaskHandle_t failsafe_task_handle = NULL;
 
 // VESC dropout callback — wired to bldc_interface_can at init
@@ -125,8 +126,8 @@ static void failsafe_task(void *pvParameters) {
 void failsafe_init(void) {
     bldc_interface_can_set_vesc_dropout_func(on_vesc_dropout);
 
-    xTaskCreate(failsafe_task, "failsafe", FAILSAFE_TASK_STACK, NULL,
-                FAILSAFE_TASK_PRIORITY, &failsafe_task_handle);
+    ESP_ERROR_CHECK(xTaskCreate(failsafe_task, "failsafe", FAILSAFE_TASK_STACK, NULL,
+                FAILSAFE_TASK_PRIORITY, &failsafe_task_handle) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
 
     ESP_LOGI(TAG, "Failsafe initialized (priority=%d, stopped_threshold=%d ERPM)",
              FAILSAFE_TASK_PRIORITY, ERPM_STOPPED_THRESHOLD);

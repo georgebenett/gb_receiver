@@ -5,12 +5,13 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <math.h>
+#include <stdatomic.h>
 
 static const char *TAG = "LED";
 static uint8_t current_duty = 0;
 
 void led_transition_task(void *pvParameters);
-static volatile uint8_t pending_target_duty = 0;
+static _Atomic uint8_t pending_target_duty;
 static TaskHandle_t transition_task_handle = NULL;
 static bool current_connected_state = false;
 static bool connection_state_known = false;
@@ -38,12 +39,9 @@ esp_err_t led_init(void)
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
 
     // Create the persistent transition task (starts suspended, waiting for notifications)
-    xTaskCreate(led_transition_task,
-                "led_transition",
-                2048,
-                NULL,
-                1,
-                &transition_task_handle);
+    ESP_ERROR_CHECK(xTaskCreate(led_transition_task, "led_transition", 2048,
+                                NULL, 1, &transition_task_handle) == pdPASS
+                        ? ESP_OK : ESP_ERR_NO_MEM);
 
     // Set initial state (disconnected)
     led_set_connection_state(false);

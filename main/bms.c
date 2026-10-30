@@ -73,7 +73,7 @@ esp_err_t bms_uart_init(void) {
         ESP_LOGW(TAG, "BMS UART pin auto-detect: no valid response on either assignment (TX/RX may be swapped or BMS disconnected)");
     }
 
-    xTaskCreate(bms_read_task, "bms_read_task", 8192, NULL, 5, NULL);
+    ESP_ERROR_CHECK(xTaskCreate(bms_read_task, "bms_read_task", 8192, NULL, 5, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
 
     ESP_LOGI(TAG, "BMS UART initialized");
     return ESP_OK;

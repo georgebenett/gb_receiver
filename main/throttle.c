@@ -35,7 +35,7 @@ static void send_throttle_task(void *pvParameters);
 
 esp_err_t throttle_init(void)
 {
-    xTaskCreate(send_throttle_task, "throttle", 4096, NULL, 5, NULL);
+    ESP_ERROR_CHECK(xTaskCreate(send_throttle_task, "throttle", 4096, NULL, 5, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
 
     ESP_LOGI(THROTTLE_TAG, "Throttle initialized");
 
