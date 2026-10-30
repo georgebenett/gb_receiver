@@ -319,7 +319,7 @@ static esp_err_t ota_fail(httpd_req_t *req, esp_ota_handle_t handle,
     return httpd_resp_send_err(req, code, msg);
 }
 
-static esp_err_t h_ota(httpd_req_t *req)
+static esp_err_t h_ota_held(httpd_req_t *req)
 {
     if (req->content_len <= 0) {
         return httpd_resp_send_err(req, HTTPD_411_LENGTH_REQUIRED,
@@ -426,6 +426,16 @@ static esp_err_t h_ota(httpd_req_t *req)
     ESP_LOGW(TAG, "OTA complete, rebooting...");
     xTaskCreate(ota_reboot_task, "ota_reboot", 2048, NULL, 1, NULL);
     return send_err;
+}
+
+// The BLE side pre-erases this same slot in the background; keep it off while
+// we write.
+static esp_err_t h_ota(httpd_req_t *req)
+{
+    ble_ota_slot_hold(true);
+    esp_err_t ret = h_ota_held(req);
+    ble_ota_slot_hold(false);
+    return ret;
 }
 
 static esp_err_t start_httpd(void)

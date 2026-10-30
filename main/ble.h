@@ -83,3 +83,6 @@ bool ble_get_connected_mac(uint8_t out[6]);
 bool ble_pair_remote(const uint8_t mac[6], uint8_t addr_type);
 // Returns false if the MAC is not in the paired list.
 bool ble_unpair_remote_by_mac(const uint8_t mac[6]);
+// The Wi-Fi /api/ota upload claims the spare OTA slot while it writes, so the
+// background pre-erase stays off it; releasing re-blanks what it left behind.
+void ble_ota_slot_hold(bool hold);

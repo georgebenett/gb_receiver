@@ -37,6 +37,8 @@
 #include "aux_output.h"
 #include "wifi_ap.h"
 #include "esp_ota_ops.h"
+#include "freertos/semphr.h"
+#include "miniz.h"
 
 extern mc_values* get_stored_vesc_values(void);
 extern bms_values_t* get_stored_bms_values(void);
@@ -65,14 +67,19 @@ extern mc_temp_config_t* get_stored_mc_temp_config(void);
 #define BLE_CMD_GET_FW_VERSION      0x07   // Command: [0x07], replied on status as [0x07, major, minor, patch, mac x6]
 #define BLE_STATUS_FRAME            0x08   // Status, once a second: see send_status_frame()
 // Firmware update from the remote. Every reply is [cmd, status, next_offset u32 LE] on status.
-#define BLE_CMD_OTA_BEGIN           0x0A   // Command: [0x0A, size u32]
-#define BLE_CMD_OTA_DATA            0x0B   // Command: [0x0B, offset u32, bytes...]
-#define BLE_CMD_OTA_END             0x0C   // Command: [0x0C] verify, switch boot slot, reboot
+#define BLE_CMD_OTA_BEGIN           0x0A   // Command: [0x0A, zlib_len u32, image_len u32] -> ERASING, then OK
+#define BLE_CMD_OTA_DATA            0x0B   // Command: [0x0B, offset u32, zlib bytes...]
+#define BLE_CMD_OTA_END             0x0C   // Command: [0x0C] verify, switch boot slot, reboot; early, it aborts
 #define OTA_ST_OK                   0
 #define OTA_ST_REFUSED              1      // wheels turning, or no update in progress
 #define OTA_ST_FLASH_ERR            2
 #define OTA_ST_BAD_OFFSET           3      // next_offset says where to resume
+#define OTA_ST_ERASING              4      // BEGIN accepted; OK follows once erased
 #define OTA_MAX_STANDSTILL_ERPM     100.0f
+#define OTA_ACK_EVERY               4096   // bytes between DATA acks
+#define OTA_WINDOW                  8192   // inflate ring; the remote packs with an 8 KB zlib window
+#define OTA_BLOCK                   0x10000
+#define OTA_SECTOR                  0x1000
 
 
 static const uint16_t spp_service_uuid = 0xABF0;
@@ -116,11 +123,13 @@ static bool is_connected = false;
 static bool is_authenticated = false;  // Connection is encrypted/authenticated
 static bool remote_shutdown_requested = false;  // BLE_CMD_SHUTDOWN seen before disconnect
 
-// BLE firmware update in progress (0 = none). Throttle is held neutral while set.
-static esp_ota_handle_t ota_handle = 0;
+// BLE firmware update in progress. Throttle is held neutral while set.
+static volatile bool ota_active = false;
 static const esp_partition_t *ota_part = NULL;
-static uint32_t ota_size = 0;
-static uint32_t ota_written = 0;
+static uint32_t ota_size = 0;     // zlib stream bytes
+static uint32_t ota_written = 0;  // zlib stream bytes received
+static uint32_t ota_raw = 0;      // app image bytes
+static uint32_t ota_out = 0;      // app image bytes written to ota_part
 
 static float trip_km = 0.0f;
 static uint32_t trip_last_update_ms = 0;
@@ -471,12 +480,26 @@ static void ota_reply(uint8_t cmd, uint8_t status)
         spp_handle_table[SPP_IDX_SPP_STATUS_VAL], sizeof(rsp), rsp, false);
 }
 
+static volatile bool ota_erasing = false;
+static volatile uint32_t ota_epoch = 0;  // bumped by every cancel, incl. disconnect
+static SemaphoreHandle_t slot_lock = NULL;  // the BEGIN erase vs the background one
+static TaskHandle_t ota_prep_handle = NULL;
+static bool slot_held = false;  // the Wi-Fi /api/ota upload owns the slot
+static tinfl_decompressor *inf = NULL;
+static uint8_t *inf_ring = NULL;
+static uint32_t inf_ring_pos = 0;
+static tinfl_status inf_status;
+static int64_t ota_t0_us = 0;    // erase done
+static int64_t ota_busy_us = 0;  // inside ota_inflate: inflate + flash writes
+static uint32_t ota_bad = 0;     // out-of-order chunks: the remote lost or resent some
+
 static void ota_cancel(void)
 {
-    if (ota_handle) {
-        esp_ota_abort(ota_handle);
-        ota_handle = 0;
+    ota_epoch++;
+    if (ota_active) {
+        ota_active = false;
         ESP_LOGW(GATTS_TABLE_TAG, "BLE OTA aborted at %" PRIu32 "/%" PRIu32, ota_written, ota_size);
+        xTaskNotifyGive(ota_prep_handle);  // blank the half-written slot again
     }
 }
 
@@ -486,14 +509,142 @@ static void ble_ota_reboot_task(void *arg)
     esp_restart();
 }
 
-// Runs on the BTC task. Flash erases (sequential, 4 KB at a time) stall it for
-// tens of ms; fine while stationary with throttle held neutral.
-// ponytail: stop-and-wait, one chunk per round trip (~2 min for 1.4 MB). A send
-// window on the remote is the upgrade if that is too slow.
+/** True if [off, off + len) of `part` reads as erased. Caller holds slot_lock. */
+static bool slot_blank(const esp_partition_t *part, uint32_t off, uint32_t len)
+{
+    static uint32_t buf[256];
+    for (uint32_t pos = off; pos < off + len; pos += sizeof(buf)) {
+        if (esp_partition_read(part, pos, buf, sizeof(buf)) != ESP_OK) {
+            return false;
+        }
+        for (int i = 0; i < 256; i++) {
+            if (buf[i] != UINT32_MAX) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// Erases what the background pass hasn't, in 64 KB blocks. Each block stalls
+// the single core for ~150 ms, so it runs off the BTC task with the throttle
+// timeout paused; the wheels are stopped.
+static void ota_erase_task(void *arg)
+{
+    uint32_t epoch = (uint32_t)(uintptr_t)arg;
+    throttle_stop_timeout_monitor();
+    xSemaphoreTake(slot_lock, portMAX_DELAY);
+    esp_err_t err = ESP_OK;
+    for (uint32_t off = 0; err == ESP_OK && epoch == ota_epoch && off < ota_raw; off += OTA_BLOCK) {
+        if (!slot_blank(ota_part, off, OTA_BLOCK)) {
+            err = esp_partition_erase_range(ota_part, off, OTA_BLOCK);
+        }
+    }
+    xSemaphoreGive(slot_lock);
+    ota_erasing = false;
+    if (epoch != ota_epoch) {  // cancelled or disconnected while we erased
+        if (is_connected) {
+            throttle_start_timeout_monitor();
+        }
+        vTaskDelete(NULL);
+    }
+    ota_active = err == ESP_OK;
+    ota_t0_us = esp_timer_get_time();
+    ota_busy_us = 0;
+    ota_bad = 0;
+    throttle_start_timeout_monitor();
+    ESP_LOGW(GATTS_TABLE_TAG, "BLE OTA %s: %" PRIu32 " -> %" PRIu32 " bytes into %s",
+             err == ESP_OK ? "started" : "erase failed", ota_size, ota_raw, ota_part->label);
+    ota_reply(BLE_CMD_OTA_BEGIN, err == ESP_OK ? OTA_ST_OK : OTA_ST_FLASH_ERR);
+    vTaskDelete(NULL);
+}
+
+/** Inflate the next `n` stream bytes into the slot; `last` marks the end. */
+static esp_err_t ota_inflate(const uint8_t *in, size_t n, bool last)
+{
+    uint32_t flags = TINFL_FLAG_PARSE_ZLIB_HEADER | (last ? 0 : TINFL_FLAG_HAS_MORE_INPUT);
+    for (;;) {
+        size_t in_n = n;
+        size_t out_n = OTA_WINDOW - inf_ring_pos;
+        inf_status = tinfl_decompress(inf, in, &in_n, inf_ring, inf_ring + inf_ring_pos,
+                                      &out_n, flags);
+        in += in_n;
+        n -= in_n;
+        if (out_n > 0) {
+            if (ota_out + out_n > ota_raw ||
+                esp_partition_write(ota_part, ota_out, inf_ring + inf_ring_pos, out_n) != ESP_OK) {
+                return ESP_FAIL;
+            }
+            ota_out += out_n;
+            inf_ring_pos = (inf_ring_pos + out_n) & (OTA_WINDOW - 1);
+        }
+        if (inf_status < TINFL_STATUS_DONE) {
+            return ESP_FAIL;
+        }
+        if (inf_status != TINFL_STATUS_HAS_MORE_OUTPUT && n == 0) {
+            return ESP_OK;
+        }
+        if (inf_status == TINFL_STATUS_DONE) {
+            return ESP_FAIL;  // bytes past the end of the stream
+        }
+    }
+}
+
+static bool ota_prep_must_wait(void)
+{
+    esp_ota_img_states_t st;
+    return fabsf(get_stored_vesc_values()->rpm) > OTA_MAX_STANDSTILL_ERPM ||
+           (esp_ota_get_state_partition(esp_ota_get_running_partition(), &st) == ESP_OK &&
+            st == ESP_OTA_IMG_PENDING_VERIFY);  // the other slot is our rollback copy
+}
+
+// Blanks the spare slot after boot and after a failed update, so the next BLE
+// update skips its multi-second erase. 4 KB at a time (~45 ms core freeze
+// each), only at standstill; an update in progress ends the pass.
+static void ota_prep_task(void *arg)
+{
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        const esp_partition_t *part = esp_ota_get_next_update_partition(NULL);
+        bool busy = false;
+        for (uint32_t off = 0; part != NULL && !busy && off < part->size; off += OTA_SECTOR) {
+            while (ota_prep_must_wait()) {
+                vTaskDelay(pdMS_TO_TICKS(1000));
+            }
+            xSemaphoreTake(slot_lock, portMAX_DELAY);
+            busy = ota_erasing || ota_active || slot_held;
+            if (!busy && !slot_blank(part, off, OTA_SECTOR)) {
+                esp_partition_erase_range(part, off, OTA_SECTOR);
+            }
+            xSemaphoreGive(slot_lock);
+            vTaskDelay(pdMS_TO_TICKS(10));  // let throttle and CAN traffic through
+        }
+    }
+}
+
+void ble_ota_slot_hold(bool hold)
+{
+    // Under the lock: an erase already under way finishes before we return.
+    xSemaphoreTake(slot_lock, portMAX_DELAY);
+    slot_held = hold;
+    xSemaphoreGive(slot_lock);
+    if (!hold) {
+        xTaskNotifyGive(ota_prep_handle);  // blank whatever a failed upload left
+    }
+}
+
+// Runs on the BTC task. The stream is zlib; each chunk is inflated straight
+// into the pre-erased slot. The remote keeps several chunks in flight and
+// resyncs on BAD_OFFSET.
 static void ota_handle_cmd(const uint8_t *v, uint16_t len)
 {
     uint8_t cmd = v[0];
-    if (cmd == BLE_CMD_OTA_BEGIN && len >= 5) {
+    if (cmd == BLE_CMD_OTA_BEGIN && len >= 9) {
+        if (ota_erasing) {
+            ota_cancel();  // the erase task sees it and stops
+            ota_reply(cmd, OTA_ST_REFUSED);
+            return;
+        }
         ota_cancel();
         ota_written = 0;
         if (fabsf(get_stored_vesc_values()->rpm) > OTA_MAX_STANDSTILL_ERPM) {
@@ -501,52 +652,76 @@ static void ota_handle_cmd(const uint8_t *v, uint16_t len)
             return;
         }
         ota_size = v[1] | (v[2] << 8) | (v[3] << 16) | ((uint32_t)v[4] << 24);
+        ota_raw = v[5] | (v[6] << 8) | (v[7] << 16) | ((uint32_t)v[8] << 24);
         ota_part = esp_ota_get_next_update_partition(NULL);
-        if (ota_part == NULL || ota_size > ota_part->size ||
-            esp_ota_begin(ota_part, OTA_WITH_SEQUENTIAL_WRITES, &ota_handle) != ESP_OK) {
-            ota_handle = 0;
+        if (inf == NULL) {
+            inf = malloc(sizeof(*inf));
+            inf_ring = malloc(OTA_WINDOW);
+        }
+        if (ota_part == NULL || ota_size == 0 || ota_raw == 0 || ota_raw > ota_part->size ||
+            inf == NULL || inf_ring == NULL) {
             ota_reply(cmd, OTA_ST_FLASH_ERR);
             return;
         }
+        tinfl_init(inf);
+        inf_status = TINFL_STATUS_NEEDS_MORE_INPUT;
+        inf_ring_pos = 0;
+        ota_out = 0;
         throttle_reset_value();
-        ESP_LOGW(GATTS_TABLE_TAG, "BLE OTA started: %" PRIu32 " bytes -> %s", ota_size, ota_part->label);
-        ota_reply(cmd, OTA_ST_OK);
+        ota_erasing = true;
+        ota_reply(cmd, OTA_ST_ERASING);
+        if (xTaskCreate(ota_erase_task, "ota_erase", 4096, (void *)(uintptr_t)ota_epoch, 4, NULL) != pdPASS) {
+            ota_erasing = false;
+            ota_reply(cmd, OTA_ST_FLASH_ERR);
+        }
     } else if (cmd == BLE_CMD_OTA_DATA && len > 5) {
-        if (!ota_handle) {
+        if (!ota_active) {
             ota_reply(cmd, OTA_ST_REFUSED);
             return;
         }
         uint32_t off = v[1] | (v[2] << 8) | (v[3] << 16) | ((uint32_t)v[4] << 24);
         uint32_t n = len - 5;
         if (off != ota_written) {
+            ota_bad++;
             ota_reply(cmd, OTA_ST_BAD_OFFSET);  // e.g. a resent chunk whose ack was lost
             return;
         }
-        if (ota_written + n > ota_size || esp_ota_write(ota_handle, &v[5], n) != ESP_OK) {
+        int64_t t = esp_timer_get_time();
+        esp_err_t err = ota_written + n > ota_size
+                            ? ESP_FAIL
+                            : ota_inflate(&v[5], n, ota_written + n == ota_size);
+        ota_busy_us += esp_timer_get_time() - t;
+        if (err != ESP_OK) {
             ota_cancel();
             ota_reply(cmd, OTA_ST_FLASH_ERR);
             return;
         }
         ota_written += n;
-        ota_reply(cmd, OTA_ST_OK);
+        // Acks are cumulative, so one per 4 KB keeps the remote's window moving
+        // with an eighth of the notifications.
+        if (ota_written / OTA_ACK_EVERY != (ota_written - n) / OTA_ACK_EVERY ||
+            ota_written == ota_size) {
+            ota_reply(cmd, OTA_ST_OK);
+        }
     } else if (cmd == BLE_CMD_OTA_END) {
-        if (!ota_handle || ota_written != ota_size) {
+        if (!ota_active || ota_written != ota_size || inf_status != TINFL_STATUS_DONE ||
+            ota_out != ota_raw) {
             ota_cancel();
             ota_reply(cmd, OTA_ST_REFUSED);
             return;
         }
-        // esp_ota_end checks the image (magic, chip, SHA-256) before we switch to it.
-        esp_err_t err = esp_ota_end(ota_handle);
-        ota_handle = 0;
-        if (err == ESP_OK) {
-            err = esp_ota_set_boot_partition(ota_part);
-        }
+        ota_active = false;
+        // Checks the image (magic, chip, SHA-256) before switching to it.
+        esp_err_t err = esp_ota_set_boot_partition(ota_part);
         if (err != ESP_OK) {
             ESP_LOGE(GATTS_TABLE_TAG, "BLE OTA rejected: %s", esp_err_to_name(err));
             ota_reply(cmd, OTA_ST_FLASH_ERR);
+            xTaskNotifyGive(ota_prep_handle);
             return;
         }
-        ESP_LOGW(GATTS_TABLE_TAG, "BLE OTA complete, rebooting");
+        ESP_LOGW(GATTS_TABLE_TAG, "BLE OTA complete in %" PRId64 " ms (%" PRId64 " ms inflating and writing flash, "
+                 "%" PRIu32 " out-of-order chunks), rebooting",
+                 (esp_timer_get_time() - ota_t0_us) / 1000, ota_busy_us / 1000, ota_bad);
         remote_shutdown_requested = true;  // the reboot's disconnect is not a lost link
         ota_reply(cmd, OTA_ST_OK);
         xTaskCreate(ble_ota_reboot_task, "ota_reboot", 2048, NULL, 1, NULL);
@@ -610,7 +785,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
                 }
 
                 if (res == SPP_IDX_SPP_DATA_RECV_VAL) {
-                    if (ota_handle) {
+                    if (ota_active || ota_erasing) {
                         // Mid-update: hold neutral whatever the lever says.
                         throttle_reset_value();
                         throttle_reset_timeout();
@@ -825,6 +1000,9 @@ esp_err_t ble_spp_server_start(void)
     esp_ble_gatts_app_register(ESP_SPP_APP_ID);
 
     xTaskCreate(adv_task, "ble_adv", 2048, NULL, 5, &adv_task_handle);
+    slot_lock = xSemaphoreCreateMutex();
+    xTaskCreate(ota_prep_task, "ota_prep", 3072, NULL, 1, &ota_prep_handle);
+    xTaskNotifyGive(ota_prep_handle);
     wifi_idle_timer = xTimerCreate("wifi_idle",
                                    pdMS_TO_TICKS(WIFI_AP_IDLE_TIMEOUT_MS),
                                    pdFALSE, NULL, wifi_idle_timer_cb);

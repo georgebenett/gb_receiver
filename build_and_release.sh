@@ -45,11 +45,13 @@ fi
 
 print_info "Building firmware version: $VERSION"
 
-# Refuse to run with a dirty working tree — the tag we create must point at a
+# Refuse to run with uncommitted firmware source — the tag we create must point at a
 # commit whose source actually contains $VERSION, otherwise the released binary
-# won't match the code at v$VERSION.
-if ! git diff --quiet HEAD -- 2>/dev/null || [ -n "$(git ls-files --others --exclude-standard)" ]; then
-    print_error "Working tree is dirty. Commit your version bump (and any other changes) before releasing."
+# won't match the code at v$VERSION. Scripts and other files that don't affect
+# the binary are ignored.
+FW_PATHS=(main components CMakeLists.txt partitions.csv 'sdkconfig*')
+if ! git diff --quiet HEAD -- "${FW_PATHS[@]}" 2>/dev/null || [ -n "$(git ls-files --others --exclude-standard -- "${FW_PATHS[@]}")" ]; then
+    print_error "Firmware sources have uncommitted changes. Commit your version bump (and any other changes) before releasing."
     print_error "Run: git status"
     exit 1
 fi
@@ -164,6 +166,8 @@ build_target() {
     # Copy and rename files to staging directory with correct names
     # Include .elf for coredump decoding (must match flashed binary to avoid SHA mismatch)
     cp "$APP_BIN" "$STAGING_DIR/gb_receiver.bin"
+    # Kept for bundle_to_remotes.sh after the release: build/ is deleted below.
+    cp "$APP_BIN" "$ARTIFACTS_DIR/gb_receiver.bin"
     cp "build/bootloader/bootloader.bin" "$STAGING_DIR/bootloader.bin"
     cp "build/partition_table/partition-table.bin" "$STAGING_DIR/partition-table.bin"
     if [ -f "build/gb_receiver.elf" ]; then
@@ -330,5 +334,5 @@ print_info "Release created successfully!"
 print_info "View release at: https://github.com/$REPO/releases/tag/v$VERSION"
 
 # Bundle this release into the remotes. Commit it there with the next remote release.
-./bundle_to_remotes.sh --no-build
+./bundle_to_remotes.sh "$ARTIFACTS_DIR/gb_receiver.bin"
 
