@@ -52,6 +52,11 @@ static void test_name_match(void) {
   assert(!gb_adv_name_matches(NULL, 8, GB_RECEIVER_ADV_NAME));
   const uint8_t longer[] = "GS-THUMBX";
   assert(!gb_adv_name_matches(longer, 9, GB_RECEIVER_ADV_NAME));
+  // What a receiver really advertises: the name padded with zero bytes.
+  const uint8_t padded[] = {'G', 'S', '-', 'T', 'H', 'U', 'M', 'B', 0, 0, 0, 0, 0};
+  assert(gb_adv_name_matches(padded, sizeof(padded), GB_RECEIVER_ADV_NAME));
+  const uint8_t nuls[] = {0, 0, 0};
+  assert(!gb_adv_name_matches(nuls, sizeof(nuls), GB_RECEIVER_ADV_NAME));
 }
 
 int main(void) {
