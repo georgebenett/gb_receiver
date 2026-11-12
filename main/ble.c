@@ -310,6 +310,30 @@ static void apply_advertising_state(void)
     esp_ble_gap_start_advertising(&spp_adv_params);
 }
 
+// Advertise the MAC of a paired remote that has no bond yet, so that remote
+// knows to bond even though its own pairing window is closed.
+static void adv_data_update(void)
+{
+    uint8_t d[sizeof(spp_adv_data) + 8];
+    memcpy(d, spp_adv_data, sizeof(spp_adv_data));
+    size_t n = sizeof(spp_adv_data);
+    esp_ble_bond_dev_t bonds[CONFIG_BT_SMP_MAX_BONDS];
+    int nb = CONFIG_BT_SMP_MAX_BONDS;
+    if (esp_ble_get_bond_device_list(&nb, bonds) != ESP_OK) nb = 0;
+    for (int i = 0; i < paired_count; i++) {
+        bool bonded = false;
+        for (int j = 0; j < nb; j++) {
+            if (memcmp(bonds[j].bd_addr, paired_list[i].mac, 6) == 0) bonded = true;
+        }
+        if (bonded) continue;
+        d[n++] = 7; d[n++] = 0xFF;
+        memcpy(&d[n], paired_list[i].mac, 6);
+        n += 6;
+        break;
+    }
+    esp_ble_gap_config_adv_data_raw(d, n);  // ADV_DATA_RAW_SET_COMPLETE restarts adv
+}
+
 static void adv_task(void *pvParameters)
 {
     uint32_t notification = 0;
@@ -323,9 +347,9 @@ static void adv_task(void *pvParameters)
             esp_ble_gap_stop_advertising();
             vTaskDelay(pdMS_TO_TICKS(50));
             whitelist_sync();
-            apply_advertising_state();
+            adv_data_update();
         } else if (notification & ADV_TASK_NOTIFY_REFRESH_ADV) {
-            apply_advertising_state();
+            adv_data_update();
         }
     }
 }
@@ -710,7 +734,7 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
         	whitelist_sync();
 
         	ESP_LOGI(GATTS_TABLE_TAG, "%s %d", __func__, __LINE__);
-        	esp_ble_gap_config_adv_data_raw((uint8_t *)spp_adv_data, sizeof(spp_adv_data));
+        	adv_data_update();
 
         	ESP_LOGI(GATTS_TABLE_TAG, "%s %d", __func__, __LINE__);
         	esp_ble_gatts_create_attr_tab(spp_gatt_db, gatts_if, SPP_IDX_NB, SPP_SVC_INST_ID);
